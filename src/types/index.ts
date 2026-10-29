@@ -50,6 +50,11 @@ export interface VoicePreset {
   isCloned?: boolean;
   consentTimestamp?: string;
   referenceAudioUrl?: string;
+  referenceAudioBase64?: string;
+  referenceAudioMimeType?: string;
+  measuredPitchHz?: number;
+  timbreDescription?: string;
+  tempoDescription?: string;
 }
 
 export interface ProviderEndpointConfig {

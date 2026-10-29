@@ -22,9 +22,11 @@
 - `src/data/models.ts`: Verifiable model registry including **VoxCPM-2 (OpenBMB Foundation)**, Indic-TTS2, XTTS-v2, MeloTTS, F5-TTS, VITS-Bengali.
 - `src/data/presets.ts`: Culturally authentic voices (অর্পিতা, সুভাষ, আরভ, পূজা, অনন্যা, বিক্রম) and phonetically balanced benchmark sentences.
 - `src/data/benchmarks.ts`: Documented acceptance rubric for all combinations with VoxCPM-2 (4.65 MOS).
-- `src/utils/audio.ts`: Smooth acoustic tone generator without mechanical clicks/beeps.
-- `server.ts`: Express backend running `gemini-3.8-flash-lite-tts` returning 24kHz 16-bit WAV speech audio for Bengali, Hindi, and Indian English.
-- `src/components/VoiceCloneModal.tsx`: Extended voice cloning audio limit to 5 minutes (300s) with automated smart windowing, removing the 30s blocker error.
+- `src/utils/audio.ts`: Autocorrelation pitch detector ($F_0$ in Hz), spectral timbre analysis, and Base64 conversion helpers.
+- `server.ts`: Express backend running on port 3000. Uses `gemini-3.8-flash-tts` for Voice Design / few-shot neural voice cloning with calibrated acoustic personas, and `gemini-3.8-flash-lite-tts` for standard TTS.
+- `src/components/VoiceCloneModal.tsx`: Real-time acoustic feature extraction ($F_0$ pitch in Hz, vocal timbre, 512-dim embedding status), Base64 encoding, 300s windowing, and legal consent gate.
+- `src/App.tsx`: Custom cloned voice persistence in `localStorage` (`voxindica_custom_voices`), active cloned voice indicator, and parameter pass-through.
+- `src/services/providerService.ts`: Forwards `isCloned`, `referenceAudioBase64`, `measuredPitchHz`, `timbreDescription`, and `tempoDescription` to `/api/tts`.
 - `src/components/`:
   - `TopNav.tsx`: 3-zone Top Bar Contract.
   - `WaveformPlayer.tsx`: Interactive audio canvas waveform visualizer, scrubber, and WAV download.

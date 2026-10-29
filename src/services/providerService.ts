@@ -393,7 +393,13 @@ export class ProviderService {
           speed: job.speed,
           pitch: job.pitch,
           modelId: job.modelId,
-          voiceName: job.voice.name
+          voiceName: job.voice.name,
+          isCloned: job.voice.isCloned || false,
+          referenceAudioBase64: job.voice.referenceAudioBase64 || '',
+          referenceAudioMimeType: job.voice.referenceAudioMimeType || 'audio/wav',
+          measuredPitchHz: job.voice.measuredPitchHz,
+          timbreDescription: job.voice.timbreDescription,
+          tempoDescription: job.voice.tempoDescription
         })
       });
 

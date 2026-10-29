@@ -40,6 +40,28 @@ import { VOICE_PRESETS, BENCHMARK_SENTENCES } from './data/presets';
 import { MODEL_REGISTRY } from './data/models';
 import { ProviderService } from './services/providerService';
 
+const STORAGE_KEY_VOICES = 'voxindica_custom_voices';
+
+const getInitialVoices = (): VoicePreset[] => {
+  try {
+    const stored = localStorage.getItem(STORAGE_KEY_VOICES);
+    if (stored) {
+      const parsed: VoicePreset[] = JSON.parse(stored);
+      const sanitized = parsed.map((v) => ({
+        ...v,
+        measuredPitchHz: v.measuredPitchHz || (v.gender === 'male' ? 124 : 215),
+        timbreDescription: v.timbreDescription || (v.gender === 'male' ? 'Warm grounded baritone with natural vocal texture' : 'Clear melodic vocal timbre with balanced upper harmonics')
+      }));
+      const presetIds = new Set(VOICE_PRESETS.map((p) => p.id));
+      const customUnique = sanitized.filter((p) => !presetIds.has(p.id));
+      return [...customUnique, ...VOICE_PRESETS];
+    }
+  } catch {
+    // fallback
+  }
+  return VOICE_PRESETS;
+};
+
 export default function App() {
   const providerService = ProviderService.getInstance();
 
@@ -49,7 +71,7 @@ export default function App() {
   // Studio Workspace State
   const [selectedLanguage, setSelectedLanguage] = useState<SupportedLanguage>('bn-IN');
   const [selectedTask, setSelectedTask] = useState<TaskType>('tts');
-  const [voices, setVoices] = useState<VoicePreset[]>(VOICE_PRESETS);
+  const [voices, setVoices] = useState<VoicePreset[]>(getInitialVoices);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>('voice-bn-arpita');
   const [selectedModelId, setSelectedModelId] = useState<string>('voxcpm-2');
   const [activeProvider, setActiveProvider] = useState<InferenceProvider>('local');
@@ -111,7 +133,14 @@ export default function App() {
   };
 
   const handleVoiceCreated = (newVoice: VoicePreset) => {
-    setVoices([newVoice, ...voices]);
+    const updated = [newVoice, ...voices.filter((v) => v.id !== newVoice.id)];
+    setVoices(updated);
+    try {
+      const customOnly = updated.filter((v) => v.isCloned);
+      localStorage.setItem(STORAGE_KEY_VOICES, JSON.stringify(customOnly));
+    } catch {
+      // ignore
+    }
     setSelectedVoiceId(newVoice.id);
     setSelectedLanguage(newVoice.language);
     setSelectedTask('voice_clone');
@@ -345,13 +374,24 @@ export default function App() {
                             }`}
                           >
                             <div className="flex items-center justify-between">
-                              <span className="text-xs font-bold text-slate-100">{voice.name}</span>
-                              <span className="text-[10px] font-mono text-slate-400 capitalize">
+                              <span className="text-xs font-bold text-slate-100 flex items-center gap-1.5 truncate">
+                                {voice.isCloned && (
+                                  <span className="w-1.5 h-1.5 rounded-full bg-amber-400 shrink-0" />
+                                )}
+                                <span className="truncate">{voice.name}</span>
+                              </span>
+                              <span className="text-[10px] font-mono text-slate-400 capitalize shrink-0 ml-1">
                                 {voice.gender}
                               </span>
                             </div>
                             <div className="text-[11px] text-slate-400 truncate mt-0.5">
-                              {voice.tag}
+                              {voice.isCloned && voice.measuredPitchHz ? (
+                                <span className="text-amber-300/90 font-mono text-[10px]">
+                                  F0: {Math.round(voice.measuredPitchHz)}Hz · {voice.tag}
+                                </span>
+                              ) : (
+                                voice.tag
+                              )}
                             </div>
                             <div className="text-[10px] text-amber-400/80 font-mono mt-1">
                               {voice.accent}
@@ -378,6 +418,22 @@ export default function App() {
                     <span>{inputText.trim() ? inputText.trim().split(/\s+/).length : 0} words</span>
                   </div>
                 </div>
+
+                {currentVoice.isCloned && (
+                  <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center justify-between text-xs text-amber-300">
+                    <div className="flex items-center gap-2 truncate">
+                      <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                      <span className="truncate">
+                        Custom Cloned Voice Active: <strong>{currentVoice.name}</strong>
+                        {currentVoice.measuredPitchHz && ` · F0: ${Math.round(currentVoice.measuredPitchHz)}Hz`}
+                        {' · '}{currentVoice.timbreDescription || 'Custom Acoustic Persona'}
+                      </span>
+                    </div>
+                    <span className="text-[10px] font-mono bg-amber-500/20 px-2 py-0.5 rounded text-amber-300 shrink-0 ml-2">
+                      Voice Design Active
+                    </span>
+                  </div>
+                )}
 
                 <textarea
                   value={inputText}
