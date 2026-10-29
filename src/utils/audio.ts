@@ -101,47 +101,42 @@ export async function synthesizeSpeechAudio(params: {
     f3 = 2520;
   }
 
-  // Synthesize acoustic glottal pulses with natural syllabic envelope
-  const syllablesPerSec = 4.2 * params.speed;
-  const syllablePeriod = sampleRate / syllablesPerSec;
-
+  // Synthesize smooth natural acoustic speech resonance without mechanical clicks
   for (let i = 0; i < totalSamples; i++) {
     const t = i / sampleRate;
-    
-    // Natural intonation contour (slight rise at clause mid, dip at terminal stop)
+
+    // Smooth intonation contour
     const sentenceProgress = i / totalSamples;
-    const intonation = 1.0 + 0.12 * Math.sin(sentenceProgress * Math.PI) - (sentenceProgress > 0.85 ? 0.08 : 0);
+    const intonation = 1.0 + 0.08 * Math.sin(sentenceProgress * Math.PI) - (sentenceProgress > 0.85 ? 0.05 : 0);
     const instantF0 = targetF0 * intonation;
 
-    // Syllable volume envelope (pulsing vowel/consonant alternating energy)
-    const syllablePhase = (i % syllablePeriod) / syllablePeriod;
-    const syllableEnv = Math.pow(Math.sin(syllablePhase * Math.PI), 1.8);
-
-    // Glottal excitation waveform (harmonic series)
-    const glottal = 0.5 * Math.sin(2 * Math.PI * instantF0 * t) +
-                    0.28 * Math.sin(4 * Math.PI * instantF0 * t) +
-                    0.15 * Math.sin(6 * Math.PI * instantF0 * t) +
-                    0.08 * Math.sin(8 * Math.PI * instantF0 * t);
+    // Multi-harmonic gentle vocal chord resonance (fundamental + octaves)
+    const harmonic1 = 0.45 * Math.sin(2 * Math.PI * instantF0 * t);
+    const harmonic2 = 0.25 * Math.sin(4 * Math.PI * instantF0 * t);
+    const harmonic3 = 0.12 * Math.sin(6 * Math.PI * instantF0 * t);
 
     // Formant vocal tract resonance
-    const formant1 = Math.sin(2 * Math.PI * f1 * t) * 0.35;
-    const formant2 = Math.sin(2 * Math.PI * f2 * t) * 0.22;
-    const formant3 = Math.sin(2 * Math.PI * f3 * t) * 0.12;
+    const formant1 = 0.35 * Math.sin(2 * Math.PI * f1 * t);
+    const formant2 = 0.20 * Math.sin(2 * Math.PI * f2 * t);
+    const formant3 = 0.10 * Math.sin(2 * Math.PI * f3 * t);
 
-    // Subtle breathing/fricative noise for natural consonant clarity
-    const aspiration = (Math.random() * 2 - 1) * 0.035;
+    // Smooth continuous word envelope
+    const wordRate = 2.4 * params.speed;
+    const wordPeriod = sampleRate / wordRate;
+    const wordPhase = (i % wordPeriod) / wordPeriod;
+    const smoothEnv = 0.6 + 0.4 * Math.sin(wordPhase * Math.PI);
 
-    // Fade in and fade out envelope to eliminate clicks
+    // Clean edge fade in/out
     let edgeEnv = 1.0;
-    const fadeSamples = Math.floor(0.04 * sampleRate);
+    const fadeSamples = Math.floor(0.08 * sampleRate);
     if (i < fadeSamples) {
       edgeEnv = i / fadeSamples;
     } else if (i > totalSamples - fadeSamples) {
       edgeEnv = (totalSamples - i) / fadeSamples;
     }
 
-    // Combined vocal sample
-    samples[i] = (glottal * (formant1 + formant2 + formant3) + aspiration) * syllableEnv * edgeEnv * 0.82;
+    // Soft vocal tone without harsh clicks
+    samples[i] = (harmonic1 + harmonic2 + harmonic3) * (formant1 + formant2 + formant3) * smoothEnv * edgeEnv * 0.7;
   }
 
   const audioBlob = encodeWAV(samples, sampleRate);

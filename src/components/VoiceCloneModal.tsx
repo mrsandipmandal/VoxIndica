@@ -84,8 +84,10 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       setAudioDuration(tempAudio.duration);
       if (tempAudio.duration < 3.0) {
         setErrorMsg('Sample is too short (minimum 3 seconds required).');
-      } else if (tempAudio.duration > 35.0) {
-        setErrorMsg('Audio exceeds maximum recommended length of 30 seconds.');
+      } else if (tempAudio.duration > 300.0) {
+        setErrorMsg('Audio exceeds maximum recommended length of 5 minutes (300 seconds).');
+      } else {
+        setErrorMsg(null);
       }
     };
   };
@@ -290,22 +292,33 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
 
             {/* Captured Audio Preview Card */}
             {audioBlob && (
-              <div className="mt-3 p-3 bg-slate-900 border border-slate-700/80 rounded-lg flex items-center justify-between">
-                <div className="flex items-center gap-2.5">
-                  <FileAudio className="w-4 h-4 text-amber-400" />
-                  <div className="text-xs">
-                    <span className="text-slate-200 font-medium">Reference Audio Captured</span>
-                    <span className="text-slate-500 mx-1.5">·</span>
-                    <span className="text-slate-400 font-mono tabular-nums">{audioDuration.toFixed(1)}s duration</span>
+              <div className="mt-3 space-y-2">
+                <div className="p-3 bg-slate-900 border border-slate-700/80 rounded-lg flex items-center justify-between">
+                  <div className="flex items-center gap-2.5">
+                    <FileAudio className="w-4 h-4 text-amber-400" />
+                    <div className="text-xs">
+                      <span className="text-slate-200 font-medium">Reference Audio Captured</span>
+                      <span className="text-slate-500 mx-1.5">·</span>
+                      <span className="text-slate-400 font-mono tabular-nums">{audioDuration.toFixed(1)}s duration</span>
+                    </div>
                   </div>
+                  <button
+                    onClick={togglePreview}
+                    className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
+                  >
+                    {previewPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
+                    {previewPlaying ? 'Pause' : 'Listen'}
+                  </button>
                 </div>
-                <button
-                  onClick={togglePreview}
-                  className="px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-xs text-slate-200 flex items-center gap-1.5 transition-colors cursor-pointer"
-                >
-                  {previewPlaying ? <Pause className="w-3.5 h-3.5" /> : <Play className="w-3.5 h-3.5" />}
-                  {previewPlaying ? 'Pause' : 'Listen'}
-                </button>
+
+                {audioDuration > 30.0 && (
+                  <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 flex items-start gap-2">
+                    <span className="text-amber-400 font-bold shrink-0">ℹ️</span>
+                    <span>
+                      Audio duration is <strong>{audioDuration.toFixed(1)}s</strong>. VoxIndica will automatically extract the cleanest 15–30 seconds for the speaker acoustic embedding.
+                    </span>
+                  </div>
+                )}
               </div>
             )}
           </div>

@@ -377,17 +377,54 @@ export class ProviderService {
     }
     await new Promise((r) => setTimeout(r, 380));
 
-    onProgress(75, 'Decoding audio waveform and normalising dynamic range...');
+    onProgress(75, 'Synthesizing studio acoustic speech with neural voice engine...');
 
-    // Synthesize audio using Web Audio formant speech engine with language specific formant acoustic profiles
-    const { audioBlob, durationSeconds } = await synthesizeSpeechAudio({
-      text: job.text,
-      language: job.language,
-      gender: job.voice.gender,
-      speed: job.speed,
-      pitch: job.pitch,
-      sampleRate: job.sampleRate
-    });
+    let audioBlob: Blob | null = null;
+    let durationSeconds = Math.max(2.5, job.text.trim().length / 14);
+
+    try {
+      const response = await fetch('/api/tts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: job.text,
+          language: job.language,
+          gender: job.voice.gender,
+          speed: job.speed,
+          pitch: job.pitch,
+          modelId: job.modelId,
+          voiceName: job.voice.name
+        })
+      });
+
+      if (response.ok) {
+        const data = await response.json();
+        if (data.audioBase64) {
+          const binary = atob(data.audioBase64);
+          const bytes = new Uint8Array(binary.length);
+          for (let i = 0; i < binary.length; i++) {
+            bytes[i] = binary.charCodeAt(i);
+          }
+          audioBlob = new Blob([bytes], { type: 'audio/wav' });
+          durationSeconds = Math.max(1.8, (bytes.length - 44) / (24000 * 2));
+        }
+      }
+    } catch {
+      // ignore and use fallback
+    }
+
+    if (!audioBlob) {
+      const synth = await synthesizeSpeechAudio({
+        text: job.text,
+        language: job.language,
+        gender: job.voice.gender,
+        speed: job.speed,
+        pitch: job.pitch,
+        sampleRate: job.sampleRate
+      });
+      audioBlob = synth.audioBlob;
+      durationSeconds = synth.durationSeconds;
+    }
 
     onProgress(100, 'Audio synthesis complete');
     const audioUrl = URL.createObjectURL(audioBlob);

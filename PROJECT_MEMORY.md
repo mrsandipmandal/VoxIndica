@@ -22,8 +22,9 @@
 - `src/data/models.ts`: Verifiable model registry including **VoxCPM-2 (OpenBMB Foundation)**, Indic-TTS2, XTTS-v2, MeloTTS, F5-TTS, VITS-Bengali.
 - `src/data/presets.ts`: Culturally authentic voices (অর্পিতা, সুভাষ, আরভ, পূজা, অনন্যা, বিক্রম) and phonetically balanced benchmark sentences.
 - `src/data/benchmarks.ts`: Documented acceptance rubric for all combinations with VoxCPM-2 (4.65 MOS).
-- `src/utils/audio.ts`: Real speech synthesis integration with browser Web Speech engine and PCM 16-bit WAV encoding, eliminating synthetic buzzing and ensuring natural spoken words.
-- `src/services/providerService.ts`: Local, Hugging Face API, Kaggle, and Colab worker adapter with health check and honest disconnect states.
+- `src/utils/audio.ts`: Smooth acoustic tone generator without mechanical clicks/beeps.
+- `server.ts`: Express backend running `gemini-3.8-flash-lite-tts` returning 24kHz 16-bit WAV speech audio for Bengali, Hindi, and Indian English.
+- `src/components/VoiceCloneModal.tsx`: Extended voice cloning audio limit to 5 minutes (300s) with automated smart windowing, removing the 30s blocker error.
 - `src/components/`:
   - `TopNav.tsx`: 3-zone Top Bar Contract.
   - `WaveformPlayer.tsx`: Interactive audio canvas waveform visualizer, scrubber, and WAV download.
