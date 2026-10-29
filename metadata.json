@@ -1,6 +1,8 @@
 {
-  "name": "",
-  "description": "",
+  "name": "VoxIndica",
+  "description": "Text to Voice and Voice Cloning Application.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }
