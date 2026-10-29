@@ -1,0 +1,6 @@
+{
+  "summary":  "Complete architectural blueprint and implementation plan for VoxIndica Studio, featuring Tauri + React frontend, Python FastAPI sidecar, remote Kaggle/Colab tunnel adapters with token authentication, local SQLite storage, Indic speech model evaluation matrix (Bengali WB, Hindi, Indian English), security threat model, TDD matrix, and cross-platform release strategy.",
+  "updatedAt":  "2026-10-29T10:01:53.316135892Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}
