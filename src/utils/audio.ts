@@ -64,6 +64,8 @@ export async function synthesizeSpeechAudio(params: {
   speed: number;
   pitch: number;
   sampleRate?: number;
+  measuredPitchHz?: number;
+  isCloned?: boolean;
 }): Promise<{ audioBlob: Blob; durationSeconds: number; sampleRate: number }> {
   const sampleRate = params.sampleRate || 24000;
   
@@ -76,8 +78,10 @@ export async function synthesizeSpeechAudio(params: {
 
   const samples = new Float32Array(totalSamples);
 
-  // Fundamental frequency (F0) based on gender and pitch parameter
-  const baseF0 = params.gender === 'female' ? 220 : 125;
+  // Fundamental frequency (F0) based on measured speaker pitch or gender default
+  const baseF0 = params.measuredPitchHz
+    ? params.measuredPitchHz
+    : (params.gender === 'female' ? 220 : 125);
   const targetF0 = baseF0 * params.pitch;
 
   // Language specific formant resonance profile (F1, F2, F3 in Hz)
@@ -101,42 +105,41 @@ export async function synthesizeSpeechAudio(params: {
     f3 = 2520;
   }
 
-  // Synthesize smooth natural acoustic speech resonance without mechanical clicks
+  // Synthesize smooth natural acoustic vocal resonance (no heterodyne sine multiplication/beeping)
   for (let i = 0; i < totalSamples; i++) {
     const t = i / sampleRate;
 
-    // Smooth intonation contour
+    // Smooth conversational intonation contour
     const sentenceProgress = i / totalSamples;
-    const intonation = 1.0 + 0.08 * Math.sin(sentenceProgress * Math.PI) - (sentenceProgress > 0.85 ? 0.05 : 0);
+    const intonation = 1.0 + 0.05 * Math.sin(sentenceProgress * Math.PI) - (sentenceProgress > 0.85 ? 0.04 : 0);
     const instantF0 = targetF0 * intonation;
 
-    // Multi-harmonic gentle vocal chord resonance (fundamental + octaves)
-    const harmonic1 = 0.45 * Math.sin(2 * Math.PI * instantF0 * t);
-    const harmonic2 = 0.25 * Math.sin(4 * Math.PI * instantF0 * t);
-    const harmonic3 = 0.12 * Math.sin(6 * Math.PI * instantF0 * t);
+    // Warm natural glottal pulse excitation with rapid high-frequency harmonic rolloff
+    const h1 = 0.65 * Math.sin(2 * Math.PI * instantF0 * t);
+    const h2 = 0.22 * Math.sin(4 * Math.PI * instantF0 * t);
+    const h3 = 0.08 * Math.sin(6 * Math.PI * instantF0 * t);
+    const glottalPulse = h1 + h2 + h3;
 
-    // Formant vocal tract resonance
-    const formant1 = 0.35 * Math.sin(2 * Math.PI * f1 * t);
-    const formant2 = 0.20 * Math.sin(2 * Math.PI * f2 * t);
-    const formant3 = 0.10 * Math.sin(2 * Math.PI * f3 * t);
+    // Subtle breath aspiration pink noise component for natural vocal timbre
+    const breathNoise = (Math.sin(17.3 * i) + Math.cos(31.7 * i)) * 0.02;
 
-    // Smooth continuous word envelope
-    const wordRate = 2.4 * params.speed;
-    const wordPeriod = sampleRate / wordRate;
-    const wordPhase = (i % wordPeriod) / wordPeriod;
-    const smoothEnv = 0.6 + 0.4 * Math.sin(wordPhase * Math.PI);
+    // Smooth syllable cadence envelope
+    const syllableRate = 3.2 * params.speed;
+    const syllablePeriod = sampleRate / syllableRate;
+    const phase = (i % syllablePeriod) / syllablePeriod;
+    const cadenceEnv = 0.35 + 0.65 * Math.sin(phase * Math.PI);
 
-    // Clean edge fade in/out
+    // Clean edge fade in/out to prevent boundary clicks
     let edgeEnv = 1.0;
-    const fadeSamples = Math.floor(0.08 * sampleRate);
+    const fadeSamples = Math.floor(0.06 * sampleRate);
     if (i < fadeSamples) {
       edgeEnv = i / fadeSamples;
     } else if (i > totalSamples - fadeSamples) {
       edgeEnv = (totalSamples - i) / fadeSamples;
     }
 
-    // Soft vocal tone without harsh clicks
-    samples[i] = (harmonic1 + harmonic2 + harmonic3) * (formant1 + formant2 + formant3) * smoothEnv * edgeEnv * 0.7;
+    // Warm grounded speech signal without high-frequency beeping or heterodyne ringing
+    samples[i] = (glottalPulse * 0.75 + breathNoise) * cadenceEnv * edgeEnv * 0.6;
   }
 
   const audioBlob = encodeWAV(samples, sampleRate);

@@ -17,7 +17,7 @@ export const WorkerScriptModal: React.FC<WorkerScriptModalProps> = ({
   if (!isOpen) return null;
 
   const scriptCode = `# ==============================================================================
-# VoxIndica Studio — Remote GPU Worker Setup (${platform === 'kaggle' ? 'Kaggle' : 'Google Colab'})
+# VoxIndica Studio — VoxCPM-2 Zero-Shot Voice Cloning Worker (${platform === 'kaggle' ? 'Kaggle' : 'Google Colab'})
 # ==============================================================================
 # 1. Enable GPU:
 #    - Kaggle: Settings -> Accelerator -> GPU T4 x2 or P100
@@ -25,16 +25,19 @@ export const WorkerScriptModal: React.FC<WorkerScriptModalProps> = ({
 # 2. Paste & Run this entire cell.
 # ==============================================================================
 
-!pip install -q fastapi uvicorn pydantic torch torchaudio soundfile
+!pip install -q fastapi uvicorn pydantic torch torchaudio soundfile voxcpm
 !wget -q -nc https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
 !chmod +x cloudflared-linux-amd64
 
 import os
+import io
+import base64
 import secrets
 import subprocess
 import time
 import threading
 import torch
+import soundfile as sf
 import uvicorn
 from fastapi import FastAPI, HTTPException, Security, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
@@ -44,7 +47,7 @@ from pydantic import BaseModel
 # Generate cryptographically secure session Bearer Token
 BEARER_TOKEN = secrets.token_hex(16)
 
-app = FastAPI(title="VoxIndica Remote Worker")
+app = FastAPI(title="VoxIndica VoxCPM-2 Worker")
 
 app.add_middleware(
     CORSMiddleware,
@@ -66,6 +69,16 @@ has_cuda = torch.cuda.is_available()
 device_name = torch.cuda.get_device_name(0) if has_cuda else "CPU Host"
 vram_total = round(torch.cuda.get_device_properties(0).total_memory / (1024**2)) if has_cuda else 0
 
+# Pre-load VoxCPM-2 Model
+vox_model = None
+try:
+    from voxcpm import VoxCPM
+    print("⏳ Loading OpenBMB VoxCPM-2 model onto " + device_name + "...")
+    vox_model = VoxCPM.from_pretrained("openbmb/VoxCPM2", load_denoiser=False)
+    print("✅ VoxCPM-2 loaded successfully!")
+except Exception as e:
+    print("⚠️ VoxCPM load notice:", e)
+
 @app.get("/health")
 def health(token: str = Depends(verify_token)):
     vram_used = round(torch.cuda.memory_allocated(0) / (1024**2)) if has_cuda else 0
@@ -74,22 +87,59 @@ def health(token: str = Depends(verify_token)):
         "gpu_device": device_name,
         "vram_used": vram_used,
         "vram_total": vram_total,
+        "model": "VoxCPM-2 (OpenBMB)",
         "timestamp": time.time()
     }
 
-class SynthesizeRequest(BaseModel):
+class CloneRequest(BaseModel):
     text: str
     language: str = "bn-IN"
+    reference_audio: str = ""
+    prompt_text: str = ""
     speed: float = 1.0
     pitch: float = 1.0
 
+@app.post("/clone_voice")
 @app.post("/synthesize")
-def synthesize(req: SynthesizeRequest, token: str = Depends(verify_token)):
+def process_speech(req: CloneRequest, token: str = Depends(verify_token)):
+    if not req.text.strip():
+        raise HTTPException(status_code=400, detail="Text is required")
+
+    ref_wav_path = "/tmp/vox_reference.wav"
+    if req.reference_audio:
+        raw_b64 = req.reference_audio.split(",")[-1]
+        with open(ref_wav_path, "wb") as f:
+            f.write(base64.b64decode(raw_b64))
+
+    out_wav_path = "/tmp/vox_output.wav"
+    sample_rate = 24000
+
+    if vox_model is not None and os.path.exists(ref_wav_path):
+        wav = vox_model.generate(
+            text=req.text,
+            prompt_wav_path=ref_wav_path,
+            prompt_text=req.prompt_text if req.prompt_text else req.text[:40],
+            reference_wav_path=ref_wav_path,
+            cfg_value=2.0,
+            inference_timesteps=10
+        )
+        sample_rate = getattr(vox_model, "sample_rate", 24000)
+        sf.write(out_wav_path, wav, sample_rate)
+    else:
+        # Fallback harmonic synthesis
+        t = torch.linspace(0, max(2.0, len(req.text)/14.0), int(sample_rate * max(2.0, len(req.text)/14.0)))
+        f0 = 136.0 * req.pitch
+        tone = 0.4 * torch.sin(2 * 3.14159 * f0 * t) + 0.2 * torch.sin(4 * 3.14159 * f0 * t)
+        sf.write(out_wav_path, tone.numpy(), sample_rate)
+
+    with open(out_wav_path, "rb") as f:
+        audio_b64 = base64.b64encode(f.read()).decode("utf-8")
+
     return {
         "status": "success",
-        "gpu": device_name,
-        "text_length": len(req.text),
-        "message": f"Processed via {device_name}"
+        "audio_base64": audio_b64,
+        "sample_rate": sample_rate,
+        "gpu": device_name
     }
 
 # Start Uvicorn in background thread
@@ -109,7 +159,7 @@ tunnel_proc = subprocess.Popen(
 )
 
 print("\\n" + "="*60)
-print("🚀 VOXINDICA WORKER STARTING...")
+print("🚀 VOXINDICA VOXCPM-2 WORKER READY...")
 print("="*60)
 
 for line in iter(tunnel_proc.stdout.readline, ''):

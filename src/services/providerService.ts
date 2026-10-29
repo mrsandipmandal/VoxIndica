@@ -397,9 +397,12 @@ export class ProviderService {
           isCloned: job.voice.isCloned || false,
           referenceAudioBase64: job.voice.referenceAudioBase64 || '',
           referenceAudioMimeType: job.voice.referenceAudioMimeType || 'audio/wav',
+          promptText: job.voice.promptText || '',
           measuredPitchHz: job.voice.measuredPitchHz,
           timbreDescription: job.voice.timbreDescription,
-          tempoDescription: job.voice.tempoDescription
+          tempoDescription: job.voice.tempoDescription,
+          workerUrl: config.isConnected && config.endpointUrl ? config.endpointUrl : undefined,
+          workerToken: config.bearerToken || undefined
         })
       });
 
@@ -426,6 +429,8 @@ export class ProviderService {
         gender: job.voice.gender,
         speed: job.speed,
         pitch: job.pitch,
+        measuredPitchHz: job.voice.measuredPitchHz,
+        isCloned: job.voice.isCloned,
         sampleRate: job.sampleRate
       });
       audioBlob = synth.audioBlob;

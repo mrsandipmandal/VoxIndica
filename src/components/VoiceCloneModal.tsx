@@ -32,6 +32,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const [timbreDescription, setTimbreDescription] = useState<string | undefined>(undefined);
   const [tempoDescription, setTempoDescription] = useState<string | undefined>(undefined);
   const [audioBase64, setAudioBase64] = useState<string | undefined>(undefined);
+  const [promptText, setPromptText] = useState('');
 
   const recorderRef = useRef<VoiceRecorder | null>(null);
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
@@ -180,6 +181,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       referenceAudioUrl: URL.createObjectURL(audioBlob),
       referenceAudioBase64: audioBase64,
       referenceAudioMimeType: audioBlob.type || 'audio/wav',
+      promptText: promptText.trim() || undefined,
       measuredPitchHz: measuredPitchHz || (gender === 'male' ? 125 : 215),
       timbreDescription: timbreDescription || (gender === 'male' ? 'Warm grounded baritone with natural vocal texture' : 'Clear melodic vocal timbre with balanced upper harmonics'),
       tempoDescription: tempoDescription || 'natural conversational prosody'
@@ -380,14 +382,22 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
                   </div>
                 ) : null}
 
-                {audioDuration > 30.0 && (
-                  <div className="text-[11px] text-amber-300/90 bg-amber-500/10 border border-amber-500/20 rounded-lg p-2.5 flex items-start gap-2">
-                    <span className="text-amber-400 font-bold shrink-0">ℹ️</span>
-                    <span>
-                      Audio duration is <strong>{audioDuration.toFixed(1)}s</strong>. VoxIndica will automatically extract the cleanest 15–30 seconds for the speaker acoustic embedding.
-                    </span>
-                  </div>
-                )}
+                {/* Optional Transcript Input for VoxCPM-2 Verbatim Phoneme Alignment */}
+                <div className="pt-1">
+                  <label className="block text-[11px] font-medium text-slate-300 mb-1">
+                    Reference Audio Transcript / স্ক্রিপ্ট (VoxCPM-2 Verbatim Alignment — ঐচ্ছিক)
+                  </label>
+                  <input
+                    type="text"
+                    value={promptText}
+                    onChange={(e) => setPromptText(e.target.value)}
+                    placeholder="নমস্কার, আমি সন্দীপ... (অডিওতে বলা কথাটি লিখলে ক্লোনিং নিখুঁত হয়)"
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:border-amber-500 transition-colors"
+                  />
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    VoxCPM-2 uses this transcript to compute acoustic-phoneme alignment for zero-shot speaker replication.
+                  </p>
+                </div>
               </div>
             )}
           </div>

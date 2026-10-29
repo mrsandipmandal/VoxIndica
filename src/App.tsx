@@ -1,8 +1,9 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   Volume2,
   Sparkles,
   Play,
+  Pause,
   RotateCcw,
   Download,
   Settings,
@@ -104,15 +105,51 @@ export default function App() {
   const currentModel = MODEL_REGISTRY.find((m) => m.id === selectedModelId) || MODEL_REGISTRY[0];
   const providerConfig = providerService.getConfig(activeProvider);
 
+  // Cloned Reference Audio Playback
+  const [referenceAudioPlaying, setReferenceAudioPlaying] = useState(false);
+  const refAudioRef = useRef<HTMLAudioElement | null>(null);
+
+  const handleToggleReferenceAudio = () => {
+    const src = currentVoice.referenceAudioUrl || currentVoice.referenceAudioBase64;
+    if (!src) return;
+
+    if (referenceAudioPlaying) {
+      if (refAudioRef.current) {
+        refAudioRef.current.pause();
+      }
+      setReferenceAudioPlaying(false);
+    } else {
+      if (!refAudioRef.current || refAudioRef.current.src !== src) {
+        const audio = new Audio(src);
+        audio.onended = () => setReferenceAudioPlaying(false);
+        refAudioRef.current = audio;
+      }
+      refAudioRef.current.play().catch(() => setReferenceAudioPlaying(false));
+      setReferenceAudioPlaying(true);
+    }
+  };
+
   // Update voice list and default text when language changes
   const handleLanguageChange = (lang: SupportedLanguage) => {
     setSelectedLanguage(lang);
     const available = voices.filter((v) => v.language === lang);
-    if (available.length > 0) {
-      setSelectedVoiceId(available[0].id);
-      setInputText(available[0].samplePrompt);
-      setSpeed(available[0].speedDefault);
-      setPitch(available[0].pitchDefault);
+
+    // If the active voice is cloned, preserve it across languages!
+    if (!currentVoice?.isCloned && available.length > 0) {
+      const langVoice = voices.find((v) => !v.isCloned && v.language === lang) || available[0];
+      setSelectedVoiceId(langVoice.id);
+      setInputText(langVoice.samplePrompt);
+      setSpeed(langVoice.speedDefault);
+      setPitch(langVoice.pitchDefault);
+    } else if (currentVoice?.isCloned) {
+      // Provide an authentic benchmark prompt for the newly selected language
+      if (lang === 'bn-IN') {
+        setInputText('নমস্কার। ভক্সইন্ডিকা স্টুডিওতে আপনাকে স্বাগতম। বাংলা ভাষার শুদ্ধ ও প্রাঞ্জল উচ্চারণে আমরা স্পিচ সিন্থেসিস সম্পন্ন করছি।');
+      } else if (lang === 'hi-IN') {
+        setInputText('नमस्ते। वोक्सइंडिका स्टूडियो में आपका स्वागत है। शुद्ध और स्पष्ट उच्चारण के साथ भाषण संश्लेषण।');
+      } else {
+        setInputText('Welcome to VoxIndica Studio. We provide production-grade speech synthesis with authentic Indian intonation.');
+      }
     }
 
     // Auto-select best model for the language
@@ -124,12 +161,14 @@ export default function App() {
 
   const handleVoiceSelect = (voice: VoicePreset) => {
     setSelectedVoiceId(voice.id);
-    setSelectedLanguage(voice.language);
+    if (!voice.isCloned) {
+      setSelectedLanguage(voice.language);
+      if (voice.samplePrompt) {
+        setInputText(voice.samplePrompt);
+      }
+    }
     setSpeed(voice.speedDefault);
     setPitch(voice.pitchDefault);
-    if (voice.samplePrompt) {
-      setInputText(voice.samplePrompt);
-    }
   };
 
   const handleVoiceCreated = (newVoice: VoicePreset) => {
@@ -332,7 +371,15 @@ export default function App() {
                       Text-to-Speech
                     </button>
                     <button
-                      onClick={() => setSelectedTask('voice_clone')}
+                      onClick={() => {
+                        setSelectedTask('voice_clone');
+                        const customVoice = voices.find((v) => v.isCloned);
+                        if (customVoice) {
+                          setSelectedVoiceId(customVoice.id);
+                        } else {
+                          setIsCloneModalOpen(true);
+                        }
+                      }}
                       className={`px-3 py-1.5 rounded transition-colors cursor-pointer ${
                         selectedTask === 'voice_clone'
                           ? 'bg-slate-800 text-amber-300 font-semibold'
@@ -360,7 +407,7 @@ export default function App() {
 
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5">
                     {voices
-                      .filter((v) => v.language === selectedLanguage)
+                      .filter((v) => v.isCloned || v.language === selectedLanguage)
                       .map((voice) => {
                         const isSelected = selectedVoiceId === voice.id;
                         return (
@@ -420,18 +467,31 @@ export default function App() {
                 </div>
 
                 {currentVoice.isCloned && (
-                  <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg flex items-center justify-between text-xs text-amber-300">
+                  <div className="p-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs text-amber-300">
                     <div className="flex items-center gap-2 truncate">
                       <Sparkles className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                       <span className="truncate">
-                        Custom Cloned Voice Active: <strong>{currentVoice.name}</strong>
+                        Custom Cloned Voice: <strong>{currentVoice.name}</strong>
                         {currentVoice.measuredPitchHz && ` · F0: ${Math.round(currentVoice.measuredPitchHz)}Hz`}
-                        {' · '}{currentVoice.timbreDescription || 'Custom Acoustic Persona'}
+                        {' · '}{currentVoice.timbreDescription || 'Warm grounded baritone'}
                       </span>
                     </div>
-                    <span className="text-[10px] font-mono bg-amber-500/20 px-2 py-0.5 rounded text-amber-300 shrink-0 ml-2">
-                      Voice Design Active
-                    </span>
+                    <div className="flex items-center gap-2 shrink-0">
+                      {(currentVoice.referenceAudioUrl || currentVoice.referenceAudioBase64) && (
+                        <button
+                          type="button"
+                          onClick={handleToggleReferenceAudio}
+                          className="px-2 py-0.5 rounded bg-slate-900 border border-amber-500/40 hover:bg-slate-800 text-amber-300 text-[11px] font-medium flex items-center gap-1.5 transition-colors cursor-pointer"
+                          title="Listen to original captured reference sample to compare"
+                        >
+                          {referenceAudioPlaying ? <Pause className="w-3 h-3 text-amber-400" /> : <Play className="w-3 h-3 text-amber-400 fill-current" />}
+                          <span>{referenceAudioPlaying ? 'Stop Sample' : 'Reference Audio'}</span>
+                        </button>
+                      )}
+                      <span className="text-[10px] font-mono bg-amber-500/20 px-2 py-0.5 rounded text-amber-300">
+                        VoxCPM-2 Conditioning
+                      </span>
+                    </div>
                   </div>
                 )}
 

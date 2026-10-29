@@ -55,6 +55,7 @@ export interface VoicePreset {
   measuredPitchHz?: number;
   timbreDescription?: string;
   tempoDescription?: string;
+  promptText?: string;
 }
 
 export interface ProviderEndpointConfig {
