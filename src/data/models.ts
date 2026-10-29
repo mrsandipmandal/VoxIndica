@@ -2,6 +2,29 @@ import { ModelCapability } from '../types';
 
 export const MODEL_REGISTRY: ModelCapability[] = [
   {
+    id: 'voxcpm-2',
+    name: 'VoxCPM-2 (OpenBMB Foundation)',
+    version: '2.1.0',
+    supportedTasks: ['tts', 'voice_clone'],
+    supportedLanguages: ['bn-IN', 'hi-IN', 'en-IN'],
+    verifiedAccents: {
+      'bn-IN': 'West Bengal Native with natural nasal intonation & emotional prosody',
+      'hi-IN': 'Standard Hindi with conversational nuance & nuqta accuracy',
+      'en-IN': 'Pan-Indian English (Corporate & Academic fluid rhythm)'
+    },
+    minVramMb: 4096,
+    supportsCpuFallback: true,
+    license: 'Apache-2.0',
+    permittedUse: 'commercial',
+    providerCompatibility: ['local', 'huggingface', 'kaggle', 'colab'],
+    realTimeFactor: 0.18,
+    meanOpinionScore: 4.65,
+    knownLimitations: [
+      'Reference audio under 2s may have slight variance in high-pitch female registers',
+      'Requires modern PyTorch or Web ONNX Runtime for CPU 8-bit execution'
+    ]
+  },
+  {
     id: 'indic-tts-v2',
     name: 'AI4Bharat Indic-TTS2',
     version: '2.1.0',

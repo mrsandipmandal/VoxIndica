@@ -51,7 +51,7 @@ export default function App() {
   const [selectedTask, setSelectedTask] = useState<TaskType>('tts');
   const [voices, setVoices] = useState<VoicePreset[]>(VOICE_PRESETS);
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>('voice-bn-arpita');
-  const [selectedModelId, setSelectedModelId] = useState<string>('indic-tts-v2');
+  const [selectedModelId, setSelectedModelId] = useState<string>('voxcpm-2');
   const [activeProvider, setActiveProvider] = useState<InferenceProvider>('local');
   const [autoRoutingEnabled, setAutoRoutingEnabled] = useState<boolean>(false);
 
@@ -459,6 +459,11 @@ export default function App() {
                 sampleRate={activeSampleRate}
                 voiceName={currentVoice.name}
                 languageLabel={selectedLanguage === 'bn-IN' ? 'Bengali (West Bengal)' : selectedLanguage === 'hi-IN' ? 'Hindi (India)' : 'Indian English'}
+                text={inputText}
+                language={selectedLanguage}
+                speed={speed}
+                pitch={pitch}
+                gender={currentVoice.gender}
                 onDownloadWav={handleDownloadWav}
               />
             </div>

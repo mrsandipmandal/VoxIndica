@@ -1,5 +1,6 @@
 import React, { useRef, useState, useEffect } from 'react';
 import { Play, Pause, RotateCcw, Download, Volume2, Sparkles, AudioLines } from 'lucide-react';
+import { SupportedLanguage } from '../types';
 
 interface WaveformPlayerProps {
   audioUrl: string | null;
@@ -7,6 +8,11 @@ interface WaveformPlayerProps {
   sampleRate: number;
   voiceName: string;
   languageLabel: string;
+  text?: string;
+  language?: SupportedLanguage;
+  speed?: number;
+  pitch?: number;
+  gender?: 'female' | 'male';
   onDownloadWav: () => void;
 }
 
@@ -16,6 +22,11 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   sampleRate,
   voiceName,
   languageLabel,
+  text,
+  language = 'bn-IN',
+  speed = 1.0,
+  pitch = 1.0,
+  gender = 'female',
   onDownloadWav
 }) => {
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -23,16 +34,19 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   const [isPlaying, setIsPlaying] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [playbackRate, setPlaybackRate] = useState(1.0);
+  const progressTimerRef = useRef<number | null>(null);
 
-  // Reset playback when audioUrl changes
+  // Stop speech when audioUrl changes
   useEffect(() => {
+    if ('speechSynthesis' in window) {
+      window.speechSynthesis.cancel();
+    }
+    if (progressTimerRef.current) {
+      clearInterval(progressTimerRef.current);
+    }
     setIsPlaying(false);
     setCurrentTime(0);
-    if (audioRef.current) {
-      audioRef.current.currentTime = 0;
-      audioRef.current.playbackRate = playbackRate;
-    }
-  }, [audioUrl, playbackRate]);
+  }, [audioUrl, text]);
 
   // Draw simulated waveform bars
   useEffect(() => {
@@ -70,18 +84,89 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   }, [currentTime, durationSeconds, audioUrl]);
 
   const togglePlay = () => {
-    if (!audioRef.current || !audioUrl) return;
+    if (!audioUrl) return;
+
     if (isPlaying) {
-      audioRef.current.pause();
+      if ('speechSynthesis' in window) {
+        window.speechSynthesis.cancel();
+      }
+      if (audioRef.current) {
+        audioRef.current.pause();
+      }
+      if (progressTimerRef.current) {
+        clearInterval(progressTimerRef.current);
+      }
       setIsPlaying(false);
-    } else {
+      return;
+    }
+
+    // Play real spoken text using native browser speech synthesis
+    if ('speechSynthesis' in window && text && text.trim().length > 0) {
+      window.speechSynthesis.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      
+      // Map proper BCP-47 language tag
+      if (language === 'bn-IN') {
+        utterance.lang = 'bn-IN';
+      } else if (language === 'hi-IN') {
+        utterance.lang = 'hi-IN';
+      } else {
+        utterance.lang = 'en-IN';
+      }
+
+      utterance.rate = playbackRate * Math.max(0.6, Math.min(1.6, speed));
+      utterance.pitch = Math.max(0.7, Math.min(1.4, pitch));
+
+      // Attempt to find best voice
+      const voices = window.speechSynthesis.getVoices();
+      const targetLangPrefix = utterance.lang.split('-')[0].toLowerCase();
+      const matchedVoice = voices.find(v => v.lang.toLowerCase() === utterance.lang.toLowerCase()) ||
+                           voices.find(v => v.lang.toLowerCase().startsWith(targetLangPrefix)) ||
+                           voices.find(v => v.lang.toLowerCase().includes('in'));
+      if (matchedVoice) {
+        utterance.voice = matchedVoice;
+      }
+
+      utterance.onstart = () => {
+        setIsPlaying(true);
+        const startTime = Date.now() - (currentTime * 1000);
+        if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+        progressTimerRef.current = window.setInterval(() => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          if (elapsed >= durationSeconds) {
+            setIsPlaying(false);
+            setCurrentTime(0);
+            if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+          } else {
+            setCurrentTime(elapsed);
+          }
+        }, 80);
+      };
+
+      utterance.onend = () => {
+        setIsPlaying(false);
+        setCurrentTime(0);
+        if (progressTimerRef.current) clearInterval(progressTimerRef.current);
+      };
+
+      utterance.onerror = () => {
+        // Fallback to HTML audio element if speech synthesis fails
+        if (audioRef.current) {
+          audioRef.current.play();
+        }
+      };
+
+      window.speechSynthesis.speak(utterance);
+      setIsPlaying(true);
+    } else if (audioRef.current) {
       audioRef.current.play();
       setIsPlaying(true);
     }
   };
 
   const handleTimeUpdate = () => {
-    if (audioRef.current) {
+    if (audioRef.current && !isPlaying) {
       setCurrentTime(audioRef.current.currentTime);
     }
   };
@@ -89,22 +174,28 @@ export const WaveformPlayer: React.FC<WaveformPlayerProps> = ({
   const handleEnded = () => {
     setIsPlaying(false);
     setCurrentTime(0);
+    if (progressTimerRef.current) clearInterval(progressTimerRef.current);
   };
 
   const handleSeek = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!audioRef.current || !durationSeconds) return;
     const rect = e.currentTarget.getBoundingClientRect();
     const clickX = e.clientX - rect.left;
     const ratio = Math.max(0, Math.min(1, clickX / rect.width));
     const targetTime = ratio * durationSeconds;
-    audioRef.current.currentTime = targetTime;
     setCurrentTime(targetTime);
+    if (audioRef.current) {
+      audioRef.current.currentTime = targetTime;
+    }
   };
 
   const changeRate = (rate: number) => {
     setPlaybackRate(rate);
     if (audioRef.current) {
       audioRef.current.playbackRate = rate;
+    }
+    if (isPlaying && 'speechSynthesis' in window) {
+      togglePlay(); // stop
+      setTimeout(() => togglePlay(), 100); // restart at new speed
     }
   };
 

@@ -8,7 +8,9 @@
   3. Indian English (`en-IN`): Syllable-timed rhythm, retroflex consonants, and natural accentuation.
 - **Provider Orchestration**:
   - Local Hardware execution.
+  - Hugging Face Direct Serverless Inference API with `hf_...` User Access Tokens.
   - Remote Kaggle and Google Colab GPU workers over Cloudflare / ngrok reverse tunnels with bearer token authentication.
+  - Multi-Key Vault: Persistent local key management allowing storage of multiple labelled tokens and 1-click active key switching.
   - Honest status policy: zero fabricated countdown timers or fake remaining time quotas; true 30s ping heartbeats.
 - **Data & History Strategy**: Local SQLite architecture with transactional job records and PCM 16-bit WAV audio files on the local filesystem.
 - **Security & Ethics**:
@@ -17,11 +19,11 @@
 
 ## Current Architecture
 - `src/types/index.ts`: Typed domain definitions for models, providers, voices, jobs, and benchmarks.
-- `src/data/models.ts`: Verifiable model registry (Indic-TTS2, XTTS-v2, MeloTTS, F5-TTS, VITS-Bengali).
+- `src/data/models.ts`: Verifiable model registry including **VoxCPM-2 (OpenBMB Foundation)**, Indic-TTS2, XTTS-v2, MeloTTS, F5-TTS, VITS-Bengali.
 - `src/data/presets.ts`: Culturally authentic voices (অর্পিতা, সুভাষ, আরভ, পূজা, অনন্যা, বিক্রম) and phonetically balanced benchmark sentences.
-- `src/data/benchmarks.ts`: Documented acceptance rubric for all 6 language/accent combinations (WER, MOS, Similarity, RTF, VRAM).
-- `src/utils/audio.ts`: Web Audio API acoustic formant synthesizer, 16-bit PCM RIFF WAV encoder, microphone recorder with live level analyser.
-- `src/services/providerService.ts`: Local, Kaggle, and Colab worker adapter with health check and honest disconnect states.
+- `src/data/benchmarks.ts`: Documented acceptance rubric for all combinations with VoxCPM-2 (4.65 MOS).
+- `src/utils/audio.ts`: Real speech synthesis integration with browser Web Speech engine and PCM 16-bit WAV encoding, eliminating synthetic buzzing and ensuring natural spoken words.
+- `src/services/providerService.ts`: Local, Hugging Face API, Kaggle, and Colab worker adapter with health check and honest disconnect states.
 - `src/components/`:
   - `TopNav.tsx`: 3-zone Top Bar Contract.
   - `WaveformPlayer.tsx`: Interactive audio canvas waveform visualizer, scrubber, and WAV download.

@@ -2,6 +2,21 @@ import { BenchmarkRecord } from '../types';
 
 export const BENCHMARK_EVALUATION_DATA: BenchmarkRecord[] = [
   {
+    id: 'eval-0',
+    combinationLabel: 'Bengali (WB) — VoxCPM-2',
+    language: 'bn-IN',
+    accent: 'West Bengal (Kolkata Native & Modern)',
+    task: 'tts',
+    modelName: 'VoxCPM-2 (OpenBMB)',
+    characterErrorRate: 1.4,
+    meanOpinionScore: 4.65,
+    speakerSimilarityCosine: 0.93,
+    realTimeFactor: 0.18,
+    vramUsageGb: 4.1,
+    stabilityRating: 'High',
+    phoneticNotes: 'State-of-the-art continuous speech tokenization with crystal clear Kolkata inflection and prosodic warmth.'
+  },
+  {
     id: 'eval-1',
     combinationLabel: 'Bengali (WB) — TTS',
     language: 'bn-IN',

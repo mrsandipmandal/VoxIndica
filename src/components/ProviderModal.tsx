@@ -13,10 +13,12 @@ import {
   ShieldCheck,
   Check,
   Sparkles,
-  HelpCircle
+  HelpCircle,
+  Terminal
 } from 'lucide-react';
 import { InferenceProvider, ProviderEndpointConfig, ApiKeyRecord } from '../types';
 import { ProviderService } from '../services/providerService';
+import { WorkerScriptModal } from './WorkerScriptModal';
 
 interface ProviderModalProps {
   isOpen: boolean;
@@ -43,6 +45,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
   // New Key input states
   const [newKeyLabel, setNewKeyLabel] = useState('');
   const [showTunnelExplainer, setShowTunnelExplainer] = useState(false);
+  const [showScriptModal, setShowScriptModal] = useState(false);
 
   if (!isOpen) return null;
 
@@ -298,11 +301,21 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
                     </p>
                   </div>
                 ) : (
-                  <ol className="list-decimal list-inside space-y-1 text-slate-400 leading-relaxed text-[11px]">
-                    <li>Open your VoxIndica worker notebook in {selectedTab === 'kaggle' ? 'Kaggle' : 'Google Colab'}.</li>
-                    <li>Run the startup cell to launch the FastAPI server and Cloudflare/ngrok reverse tunnel.</li>
-                    <li>Copy the resulting tunnel URL and bearer token into the fields below.</li>
-                  </ol>
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pt-1">
+                    <ol className="list-decimal list-inside space-y-1 text-slate-400 leading-relaxed text-[11px]">
+                      <li>Open your VoxIndica worker notebook in {selectedTab === 'kaggle' ? 'Kaggle' : 'Google Colab'}.</li>
+                      <li>Run the startup cell to launch the FastAPI server and Cloudflare reverse tunnel.</li>
+                      <li>Copy the resulting tunnel URL and bearer token into the fields below.</li>
+                    </ol>
+                    <button
+                      type="button"
+                      onClick={() => setShowScriptModal(true)}
+                      className="px-3 py-1.5 rounded-lg bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap self-start sm:self-auto"
+                    >
+                      <Terminal className="w-3.5 h-3.5" />
+                      Get 1-Click Python Code
+                    </button>
+                  </div>
                 )}
               </div>
 
@@ -479,6 +492,13 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
           </div>
         </div>
       </div>
+
+      {/* 1-Click Python Setup Script Modal */}
+      <WorkerScriptModal
+        isOpen={showScriptModal}
+        onClose={() => setShowScriptModal(false)}
+        platform={selectedTab === 'kaggle' ? 'kaggle' : 'colab'}
+      />
     </div>
   );
 };
