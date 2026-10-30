@@ -16,5 +16,7 @@
 - [ ] Test cross-platform builds: `.AppImage` (Linux), `.msi` (Windows), `.dmg` (macOS).
 
 ### Phase 3: Live Worker Notebook Bridges
-- [ ] Release production Jupyter notebooks for Kaggle and Google Colab with automated Cloudflare tunnel spinup.
+- [x] Release production Jupyter notebooks for Kaggle and Google Colab with automated Cloudflare tunnel spinup.
+  - Both notebooks are generated from `workers/voxindica_worker_core.py` via `python workers/build_notebooks.py`.
+- [x] API-first provider layer: Kaggle API proxy (`/api/providers/kaggle/{test,launch,poll}`), real `/health` probes, and `WORKER_TIMEOUT_MS`-bounded worker routing for every task.
 - [ ] Implement end-to-end webhook callbacks for long-running batch inference.
