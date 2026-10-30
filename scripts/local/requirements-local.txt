@@ -1,0 +1,14 @@
+# VoxIndica local worker dependencies
+# Python 3.10 - 3.12 recommended (PyTorch wheels).
+
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+soundfile>=0.12
+numpy>=1.26
+
+voxcpm==2.0.3
+
+# torch is pulled in by voxcpm. For an NVIDIA GPU install the CUDA build explicitly:
+#   pip install torch torchaudio --index-url https://download.pytorch.org/whl/cu121
+# or run: bash scripts/local/install_local.sh --cuda cu121
