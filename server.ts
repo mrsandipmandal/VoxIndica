@@ -5,6 +5,7 @@ import dotenv from 'dotenv';
 import path from 'path';
 import fs from 'fs';
 import os from 'os';
+import zlib from 'node:zlib';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { applyAcousticVoiceCloning } from './src/server/acousticClone';
@@ -12,6 +13,11 @@ import { applyAcousticVoiceCloning } from './src/server/acousticClone';
 dotenv.config();
 
 const execAsync = promisify(exec);
+
+const KAGGLE_API = 'https://www.kaggle.com/api/v1';
+const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS) || 120000;
+const KAGGLE_KERNEL_SLUG = 'voxindica-worker';
+const WORKER_PLATFORMS = new Set(['local', 'kaggle', 'colab']);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
@@ -102,6 +108,7 @@ async function synthesizeIndicNeuralSpeech(
 app.post('/api/tts', async (req, res) => {
   try {
     const {
+      provider,
       text,
       language,
       gender,
@@ -123,10 +130,14 @@ app.post('/api/tts', async (req, res) => {
       return res.status(400).json({ error: 'Text prompt is required' });
     }
 
-    // Direct worker voice clone attempt if workerUrl is provided
-    if (workerUrl && isCloned) {
+    // A worker-backed provider must answer or fail loudly. Falling through to the
+    // Gemini/formant pipeline here would present synthetic audio as the clone.
+    const usesWorker =
+      Boolean(workerUrl) && (WORKER_PLATFORMS.has(String(provider)) || Boolean(isCloned));
+
+    if (usesWorker) {
+      const cleanWorkerUrl = String(workerUrl).replace(/\/+$/, '');
       try {
-        const cleanWorkerUrl = workerUrl.replace(/\/+$/, '');
         const workerResp = await fetch(`${cleanWorkerUrl}/clone_voice`, {
           method: 'POST',
           headers: {
@@ -138,10 +149,10 @@ app.post('/api/tts', async (req, res) => {
             language: language || 'bn-IN',
             reference_audio: referenceAudioBase64 || '',
             prompt_text: promptText || '',
-            speed: speed || 1.0,
-            pitch: pitch || 1.0,
+            cfg_value: 2.0,
+            inference_timesteps: 8,
           }),
-          signal: AbortSignal.timeout(5000),
+          signal: AbortSignal.timeout(WORKER_TIMEOUT_MS),
         });
 
         if (workerResp.ok) {
@@ -152,11 +163,27 @@ app.post('/api/tts', async (req, res) => {
               audioBase64: base64Out,
               mimeType: 'audio/wav',
               sampleRate: wData.sample_rate || 24000,
+              durationSeconds: wData.duration_seconds,
+              provider: 'worker',
+              gpu: wData.gpu,
             });
           }
+          return res.status(502).json({ error: 'Worker returned no audio payload' });
         }
-      } catch {
-        // Direct worker synthesis bypassed/timed out, continuing with studio pipeline
+
+        const detail = await workerResp.json().catch(() => null);
+        const reason = detail?.detail || detail?.error || `HTTP ${workerResp.status}`;
+        console.log(`[TTS] Worker rejected the request (${workerResp.status}): ${reason}`);
+        return res
+          .status(workerResp.status === 401 ? 401 : 502)
+          .json({ error: `Worker synthesis failed: ${reason}` });
+      } catch (workerErr: any) {
+        const isTimeout = workerErr?.name === 'TimeoutError' || workerErr?.name === 'AbortError';
+        const reason = isTimeout
+          ? `worker did not answer within ${Math.round(WORKER_TIMEOUT_MS / 1000)}s`
+          : workerErr?.message || 'worker unreachable';
+        console.log(`[TTS] Worker call failed: ${reason}`);
+        return res.status(isTimeout ? 504 : 502).json({ error: `Worker synthesis failed: ${reason}` });
       }
     }
 
@@ -334,7 +361,260 @@ app.post('/api/tts', async (req, res) => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// Kaggle API proxy — credentials arrive per request and are never persisted.
+// ---------------------------------------------------------------------------
+function kaggleAuthHeader(username: string, key: string): string {
+  return `Basic ${Buffer.from(`${username}:${key}`).toString('base64')}`;
+}
+
+/** Minimal ZIP reader (stored + deflate). Kaggle output bundles are standard zips. */
+function readZipEntries(buffer: Buffer): Map<string, Buffer> {
+  const entries = new Map<string, Buffer>();
+  let eocd = -1;
+  for (let i = buffer.length - 22; i >= Math.max(0, buffer.length - 66000); i -= 1) {
+    if (buffer.readUInt32LE(i) === 0x06054b50) {
+      eocd = i;
+      break;
+    }
+  }
+  if (eocd < 0) return entries;
+
+  const count = buffer.readUInt16LE(eocd + 10);
+  let offset = buffer.readUInt32LE(eocd + 16);
+
+  for (let i = 0; i < count; i += 1) {
+    if (offset + 46 > buffer.length || buffer.readUInt32LE(offset) !== 0x02014b50) break;
+    const method = buffer.readUInt16LE(offset + 10);
+    const compressedSize = buffer.readUInt32LE(offset + 20);
+    const nameLength = buffer.readUInt16LE(offset + 28);
+    const extraLength = buffer.readUInt16LE(offset + 30);
+    const commentLength = buffer.readUInt16LE(offset + 32);
+    const localOffset = buffer.readUInt32LE(offset + 42);
+    const name = buffer.toString('utf8', offset + 46, offset + 46 + nameLength);
+
+    const localNameLength = buffer.readUInt16LE(localOffset + 26);
+    const localExtraLength = buffer.readUInt16LE(localOffset + 28);
+    const dataStart = localOffset + 30 + localNameLength + localExtraLength;
+    const raw = buffer.subarray(dataStart, dataStart + compressedSize);
+
+    try {
+      entries.set(name, method === 0 ? Buffer.from(raw) : zlib.inflateRawSync(raw));
+    } catch {
+      // skip unreadable entry
+    }
+    offset += 46 + nameLength + extraLength + commentLength;
+  }
+  return entries;
+}
+
+function extractWorkerSession(entries: Map<string, Buffer>): { url?: string; token?: string } | null {
+  for (const [name, content] of entries.entries()) {
+    if (name.endsWith('worker_session.json')) {
+      try {
+        const parsed = JSON.parse(content.toString('utf8'));
+        if (parsed?.url && parsed?.token) return { url: parsed.url, token: parsed.token };
+      } catch {
+        // fall through to log scraping
+      }
+    }
+  }
+
+  for (const [name, content] of entries.entries()) {
+    if (!/\.(log|txt)$/.test(name)) continue;
+    const text = content.toString('utf8');
+    const url = text.match(/TUNNEL URL\s*:\s*(https:\/\/[a-z0-9-]+\.trycloudflare\.com)/i)?.[1];
+    const token = text.match(/BEARER TOKEN\s*:\s*([a-f0-9]{16,})/i)?.[1];
+    if (url && token) return { url, token };
+  }
+  return null;
+}
+
+async function kaggleRequest(
+  pathname: string,
+  username: string,
+  key: string,
+  init: RequestInit = {}
+): Promise<Response> {
+  return fetch(`${KAGGLE_API}${pathname}`, {
+    ...init,
+    headers: {
+      Authorization: kaggleAuthHeader(username, key),
+      ...(init.headers || {}),
+    },
+    signal: AbortSignal.timeout(60000),
+  });
+}
+
+app.post('/api/providers/kaggle/test', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const key = String(req.body?.key || '').trim();
+  if (!username || !key) {
+    return res.json({ ok: false, message: 'Username and API key are both required' });
+  }
+
+  try {
+    // `/kernels/list?mine=true` was removed from the API (HTTP 400 "Invalid field 'mine'").
+    // `user=` on kernels requires real auth, so it validates the credentials truthfully.
+    const response = await kaggleRequest(
+      `/kernels/list?user=${encodeURIComponent(username)}&pageSize=1`,
+      username,
+      key
+    );
+    if (response.ok) {
+      return res.json({ ok: true, message: `Kaggle API reachable as ${username}`, username });
+    }
+    const body = await response.text();
+    const message =
+      response.status === 401 || response.status === 403
+        ? 'Kaggle rejected these credentials (check username + API key)'
+        : `Kaggle responded HTTP ${response.status}: ${body.slice(0, 160)}`;
+    return res.json({ ok: false, message });
+  } catch (error: any) {
+    return res.json({ ok: false, message: `Could not reach Kaggle: ${error?.message || 'network error'}` });
+  }
+});
+
+app.post('/api/providers/kaggle/launch', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const key = String(req.body?.key || '').trim();
+  const datasetSource = String(req.body?.datasetSource || '').trim();
+
+  if (!username || !key) {
+    return res.json({ ok: false, message: 'Save and verify Kaggle credentials first' });
+  }
+
+  const notebookCandidates = [
+    path.resolve(process.cwd(), 'notebooks/kaggle/voxindica_worker.ipynb'),
+    path.resolve(process.cwd(), 'public/notebooks/voxindica_worker_kaggle.ipynb'),
+  ];
+  const notebookPath = notebookCandidates.find((candidate) => fs.existsSync(candidate));
+  if (!notebookPath) {
+    return res.json({
+      ok: false,
+      message: 'Worker notebook is missing from this build (notebooks/kaggle/voxindica_worker.ipynb)',
+    });
+  }
+
+  const notebook = await fs.promises.readFile(notebookPath, 'utf8');
+  const metadata = {
+    id: `${username}/${KAGGLE_KERNEL_SLUG}`,
+    title: 'VoxIndica VoxCPM2 Worker',
+    code_file: 'voxindica_worker.ipynb',
+    language: 'python',
+    kernel_type: 'notebook',
+    is_private: 'true',
+    enable_gpu: 'true',
+    enable_internet: 'true',
+    dataset_sources: datasetSource ? [datasetSource] : [],
+    competition_sources: [],
+    kernel_sources: [],
+    keywords: ['tts', 'voice-cloning', 'voxcpm2'],
+  };
+
+  const form = new FormData();
+  form.append('metadata', JSON.stringify(metadata));
+  form.append('fileName', 'voxindica_worker.ipynb');
+  form.append('fileData', notebook);
+
+  try {
+    const response = await kaggleRequest('/kernels/push', username, key, { method: 'POST', body: form });
+    const body = await response.text();
+    const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
+
+    if (!response.ok) {
+      const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
+      return res.json({
+        ok: false,
+        message:
+          response.status === 403
+            ? 'Kaggle refused the push (403). Verify your account can run GPU kernels and that the phone/identity verification is complete.'
+            : `Kaggle push failed (HTTP ${response.status}): ${cleanBody}`,
+        kernelUrl,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      message: 'Notebook pushed. Kaggle is queuing a GPU session — polling for the tunnel now.',
+      kernelUrl,
+    });
+  } catch (error: any) {
+    return res.json({ ok: false, message: `Kaggle push failed: ${error?.message || 'network error'}` });
+  }
+});
+
+app.post('/api/providers/kaggle/poll', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const key = String(req.body?.key || '').trim();
+  if (!username || !key) {
+    return res.json({ state: 'error', message: 'Kaggle credentials missing' });
+  }
+
+  const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
+  const kernelPath = `${username}/${KAGGLE_KERNEL_SLUG}`;
+
+  try {
+    const statusResponse = await kaggleRequest(`/kernels/status/${kernelPath}`, username, key);
+    const statusText = (await statusResponse.text()).trim();
+
+    if (!statusResponse.ok) {
+      const clean = statusText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+      return res.json({
+        state: 'error',
+        message:
+          statusResponse.status === 404
+            ? 'That kernel does not exist yet — press Launch on Kaggle to push it first.'
+            : `Kaggle status check failed (HTTP ${statusResponse.status}): ${clean}`,
+        kernelUrl,
+      });
+    }
+
+    if (/COMPLETE|ERROR|CANCEL/i.test(statusText)) {
+      return res.json({
+        state: 'error',
+        message:
+          'The kernel finished or errored, so the worker is no longer serving. Open the kernel log for the real error and push again.',
+        kernelUrl,
+      });
+    }
+
+    const outputResponse = await kaggleRequest(`/kernels/output/${kernelPath}`, username, key);
+    if (outputResponse.ok) {
+      const archive = Buffer.from(await outputResponse.arrayBuffer());
+      const session = extractWorkerSession(readZipEntries(archive));
+      if (session?.url && session.token) {
+        return res.json({
+          state: 'connected',
+          message: 'Worker session found in the kernel output',
+          url: session.url,
+          token: session.token,
+          kernelUrl,
+        });
+      }
+    }
+
+    return res.json({
+      state: /QUEUED|PENDING/i.test(statusText) ? 'queued' : 'running',
+      message:
+        /QUEUED|PENDING/i.test(statusText)
+          ? 'Waiting for a GPU slot…'
+          : `Kernel is ${statusText.replace('KernelWorkerStatus.', '')}, but Kaggle has not published its output yet.`,
+      kernelUrl,
+    });
+  } catch (error: any) {
+    return res.json({
+      state: 'error',
+      message: `Kaggle polling failed: ${error?.message || 'network error'}`,
+      kernelUrl,
+    });
+  }
+});
+
 async function startServer() {
+  // Markdown guides are served in dev and in production so the in-app doc links work.
+  app.use('/docs', express.static(path.resolve(process.cwd(), 'docs')));
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
