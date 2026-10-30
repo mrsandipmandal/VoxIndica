@@ -6,6 +6,48 @@ export type InferenceProvider = 'local' | 'huggingface' | 'kaggle' | 'colab';
 
 export type JobStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'disconnected';
 
+/** API is the default path; the CLI view only shows copyable commands. */
+export type ProviderAuthMethod = 'api' | 'cli';
+
+/** Hardware facts read from the browser — no server round-trip required. */
+export interface LocalHardwareInfo {
+  gpuRenderer: string | null;
+  gpuVendor: string | null;
+  cpuThreads: number;
+  deviceMemoryGb: number | null;
+  platform: string;
+  architecture: string | null;
+  webgpu: boolean;
+  wasm: boolean;
+  /** True when the GPU string looks like software rendering (SwiftShader/llvmpipe). */
+  softwareRendering: boolean;
+}
+
+/** Live result of probing a worker's GET /health endpoint. */
+export interface WorkerHealth {
+  online: boolean;
+  status?: string;
+  gpuDevice?: string;
+  vramUsedMb?: number;
+  vramTotalMb?: number;
+  modelLoaded?: boolean;
+  modelError?: string | null;
+  sampleRate?: number | null;
+  platform?: string;
+  latencyMs?: number;
+  checkedAt: string;
+  errorMessage?: string;
+}
+
+export type KaggleLaunchPhase = 'idle' | 'pushing' | 'queued' | 'running' | 'connected' | 'error';
+
+export interface KaggleLaunchState {
+  phase: KaggleLaunchPhase;
+  message: string;
+  kernelUrl?: string;
+  elapsedSeconds?: number;
+}
+
 export interface ApiKeyRecord {
   id: string;
   provider: InferenceProvider;

@@ -1,4 +1,10 @@
-import { InferenceProvider, ProviderEndpointConfig, SynthesisJob, ApiKeyRecord } from '../types';
+import {
+  InferenceProvider,
+  ProviderEndpointConfig,
+  SynthesisJob,
+  ApiKeyRecord,
+  WorkerHealth
+} from '../types';
 import { synthesizeSpeechAudio } from '../utils/audio';
 
 const STORAGE_KEY_PROVIDERS = 'voxindica_providers_config';
@@ -447,4 +453,190 @@ export class ProviderService {
       latencyMs
     };
   }
+
+  /**
+   * Probes a worker's GET /health endpoint. This is the only source of truth
+   * for "Online" — nothing here ever assumes a provider is reachable.
+   */
+  public async probeWorker(url: string, token: string, timeoutMs = 4500): Promise<WorkerHealth> {
+    const checkedAt = new Date().toISOString();
+    const endpoint = (url || '').trim().replace(/\/+$/, '');
+
+    if (!endpoint) {
+      return { online: false, checkedAt, errorMessage: 'No worker URL configured' };
+    }
+
+    try {
+      new URL(endpoint);
+    } catch {
+      return { online: false, checkedAt, errorMessage: 'Worker URL is not a valid http(s) URL' };
+    }
+
+    const started = performance.now();
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const response = await fetch(`${endpoint}/health`, {
+        method: 'GET',
+        headers: {
+          Accept: 'application/json',
+          ...(token ? { Authorization: `Bearer ${token}` } : {})
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+      const latencyMs = Math.round(performance.now() - started);
+
+      if (!response.ok) {
+        return {
+          online: false,
+          checkedAt,
+          latencyMs,
+          errorMessage: `Worker responded HTTP ${response.status}`
+        };
+      }
+
+      const data = await response.json();
+      const modelLoaded = data.model_loaded !== false;
+      return {
+        online: data.status !== 'error',
+        status: data.status,
+        gpuDevice: data.gpu_device,
+        vramUsedMb: data.vram_used,
+        vramTotalMb: data.vram_total,
+        modelLoaded,
+        modelError: data.model_error ?? null,
+        sampleRate: data.sample_rate ?? null,
+        platform: data.platform,
+        latencyMs,
+        checkedAt,
+        errorMessage: modelLoaded ? undefined : data.model_error || 'Model not loaded on the worker'
+      };
+    } catch (error) {
+      return {
+        online: false,
+        checkedAt,
+        errorMessage:
+          error instanceof Error && error.name === 'AbortError'
+            ? `Timed out after ${timeoutMs}ms — is the worker running?`
+            : `Unreachable: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
+
+  /** Applies a probe result to the stored config (no fabrication). */
+  public applyWorkerHealth(provider: InferenceProvider, health: WorkerHealth): ProviderEndpointConfig {
+    const config: ProviderEndpointConfig = {
+      ...this.providerConfigs[provider],
+      isConnected: health.online,
+      lastPingAt: health.checkedAt,
+      latencyMs: health.latencyMs,
+      gpuDeviceName: health.gpuDevice,
+      vramUsedMb: health.vramUsedMb,
+      vramTotalMb: health.vramTotalMb,
+      statusMessage: health.online
+        ? `Health check OK · ${health.latencyMs ?? '—'}ms${health.modelLoaded === false ? ' · model not loaded' : ''}`
+        : health.errorMessage || 'Worker unreachable'
+    };
+    this.saveConfig(config);
+    return config;
+  }
+
+  // --- Kaggle API (routed through server.ts, credentials never persisted server-side) ---
+  public getKaggleCredentials(): { username: string; key: string } | null {
+    const active = this.apiKeys.find((k) => k.provider === 'kaggle' && k.isActive);
+    if (!active || !active.keyOrToken || !active.accountDetails) return null;
+    return { username: active.accountDetails, key: active.keyOrToken };
+  }
+
+  public async testKaggleCredentials(
+    username: string,
+    key: string,
+    label?: string
+  ): Promise<{ ok: boolean; message: string; account?: string }> {
+    try {
+      const response = await fetch('/api/providers/kaggle/test', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ username, key })
+      });
+      const data = await response.json();
+      if (data.ok) {
+        this.saveApiKey({
+          id: `kaggle-${username}`,
+          provider: 'kaggle',
+          label: label?.trim() || `Kaggle (${username})`,
+          keyOrToken: key,
+          createdAt: new Date().toISOString(),
+          isActive: true,
+          accountDetails: username
+        });
+      }
+      return { ok: Boolean(data.ok), message: data.message || 'No response detail', account: username };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Kaggle verification failed: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
+
+  public async launchKaggleWorker(datasetSource?: string): Promise<{
+    ok: boolean;
+    message: string;
+    kernelUrl?: string;
+  }> {
+    const credentials = this.getKaggleCredentials();
+    if (!credentials) {
+      return { ok: false, message: 'Save and verify your Kaggle username + API key first.' };
+    }
+    try {
+      const response = await fetch('/api/providers/kaggle/launch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...credentials, datasetSource })
+      });
+      const data = await response.json();
+      return { ok: Boolean(data.ok), message: data.message || 'Launch request sent', kernelUrl: data.kernelUrl };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Launch failed: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
+
+  public async pollKaggleSession(): Promise<{
+    state: 'queued' | 'running' | 'connected' | 'error';
+    message: string;
+    url?: string;
+    token?: string;
+    kernelUrl?: string;
+  }> {
+    const credentials = this.getKaggleCredentials();
+    if (!credentials) {
+      return { state: 'error', message: 'Kaggle credentials missing' };
+    }
+    try {
+      const response = await fetch('/api/providers/kaggle/poll', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(credentials)
+      });
+      const data = await response.json();
+      return {
+        state: data.state || 'running',
+        message: data.message || '',
+        url: data.url,
+        token: data.token,
+        kernelUrl: data.kernelUrl
+      };
+    } catch (error) {
+      return {
+        state: 'error',
+        message: `Polling failed: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
 }
+
