@@ -22,8 +22,6 @@ with the real error message, so the Studio can show an honest failure instead of
 playing fabricated audio.
 """
 
-from __future__ import annotations
-
 import base64
 import io
 import json

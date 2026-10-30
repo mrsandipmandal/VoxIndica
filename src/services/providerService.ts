@@ -10,6 +10,9 @@ import { synthesizeSpeechAudio } from '../utils/audio';
 const STORAGE_KEY_PROVIDERS = 'voxindica_providers_config';
 const STORAGE_KEY_API_KEYS = 'voxindica_api_keys_vault';
 
+/** A stored "connected" flag older than this is shown as unverified, never as online. */
+const FRESH_CHECK_MS = 10 * 60 * 1000;
+
 export class ProviderService {
   private static instance: ProviderService;
   private providerConfigs: Record<InferenceProvider, ProviderEndpointConfig>;
@@ -32,14 +35,9 @@ export class ProviderService {
       local: {
         provider: 'local',
         endpointUrl: 'http://127.0.0.1:8000',
-        bearerToken: 'local-session-token',
-        isConnected: true,
-        lastPingAt: new Date().toISOString(),
-        latencyMs: 12,
-        gpuDeviceName: 'Direct Hardware Execution (Web/Desktop Audio Engine)',
-        vramUsedMb: 1240,
-        vramTotalMb: 8192,
-        statusMessage: 'Ready for low-latency local inference'
+        bearerToken: '',
+        isConnected: false,
+        statusMessage: 'Local worker not verified yet — start run_worker.py, then press Test & Save.'
       },
       huggingface: {
         provider: 'huggingface',
@@ -67,12 +65,37 @@ export class ProviderService {
     try {
       const stored = localStorage.getItem(STORAGE_KEY_PROVIDERS);
       if (stored) {
-        const parsed = JSON.parse(stored);
-        return {
-          ...defaultConfigs,
-          ...parsed,
-          local: defaultConfigs.local
+        const parsed = JSON.parse(stored) as Partial<Record<InferenceProvider, ProviderEndpointConfig>>;
+        const merged: Record<InferenceProvider, ProviderEndpointConfig> = { ...defaultConfigs, ...parsed };
+
+        (Object.keys(merged) as InferenceProvider[]).forEach((provider) => {
+          const saved = merged[provider];
+          const checkedAt = saved.lastPingAt ? Date.parse(saved.lastPingAt) : Number.NaN;
+          const isFresh = Number.isFinite(checkedAt) && Date.now() - checkedAt < FRESH_CHECK_MS;
+          const wasConnected = Boolean(saved.isConnected) && isFresh;
+
+          merged[provider] = {
+            ...defaultConfigs[provider],
+            ...saved,
+            isConnected: wasConnected,
+            statusMessage: wasConnected
+              ? saved.statusMessage
+              : saved.isConnected
+              ? `Last successful check was over ${Math.round(FRESH_CHECK_MS / 60000)} minutes ago — press Test & Save.`
+              : defaultConfigs[provider].statusMessage
+          };
+        });
+
+        // Local state is never restored as "connected": it is a live process probe.
+        merged.local = {
+          ...defaultConfigs.local,
+          endpointUrl: merged.local.endpointUrl || defaultConfigs.local.endpointUrl,
+          bearerToken: merged.local.bearerToken || '',
+          isConnected: false,
+          statusMessage: 'Local worker not verified in this session — press Test & Save.'
         };
+
+        return merged;
       }
     } catch {
       // ignore parsing error
@@ -192,12 +215,25 @@ export class ProviderService {
     config.bearerToken = token.trim();
 
     if (provider === 'local') {
-      config.isConnected = true;
-      config.latencyMs = Math.round(performance.now() - startTime + 8);
-      config.lastPingAt = new Date().toISOString();
-      config.statusMessage = 'Local engine active';
-      this.saveConfig(config);
-      return config;
+      // Real probe: the old implementation reported "connected" without any network call.
+      this.providerConfigs.local = config;
+      const health = await this.probeWorker(config.endpointUrl, config.bearerToken, 6000);
+      const applied = this.applyWorkerHealth('local', health);
+
+      if (health.online) {
+        this.saveApiKey({
+          id: 'default-local',
+          provider: 'local',
+          label: keyLabel?.trim() || 'Local worker',
+          keyOrToken: config.bearerToken,
+          endpointUrl: config.endpointUrl,
+          createdAt: new Date().toISOString(),
+          isActive: true,
+          accountDetails: health.gpuDevice || 'Device not reported'
+        });
+      }
+
+      return applied;
     }
 
     // --- Hugging Face Inference API validation ---
@@ -238,13 +274,15 @@ export class ProviderService {
             username = data.name || data.preferred_username || 'HF Member';
             isSuccess = true;
           }
-        } catch {
-          // If direct API endpoint whoami has CORS restrictions in browser preview,
-          // validate token syntax & length (typically 37+ characters)
-          if (token.length >= 34) {
-            isSuccess = true;
-            username = 'HF Token Verified';
-          }
+        } catch (networkError) {
+          // whoami can be blocked by the browser (CORS/offline). Say so instead of
+          // accepting any string that merely looks like a token.
+          config.isConnected = false;
+          config.statusMessage = `Could not reach huggingface.co to verify this token: ${
+            networkError instanceof Error ? networkError.message : 'network error'
+          }`;
+          this.saveConfig(config);
+          return config;
         }
 
         const elapsed = Math.round(performance.now() - startTime);
@@ -252,11 +290,8 @@ export class ProviderService {
         if (isSuccess) {
           config.isConnected = true;
           config.lastPingAt = new Date().toISOString();
-          config.latencyMs = Math.max(28, elapsed);
-          config.gpuDeviceName = 'Hugging Face Inference Serverless GPU Cluster';
-          config.vramUsedMb = 3400;
-          config.vramTotalMb = 16384;
-          config.statusMessage = `Connected to Hugging Face (${username}) · ${config.latencyMs}ms`;
+          config.latencyMs = elapsed;
+          config.statusMessage = `Hugging Face token verified (${username}) · ${config.latencyMs}ms`;
 
           // Automatically record or update in key vault
           const keyRecord: ApiKeyRecord = {
@@ -282,85 +317,47 @@ export class ProviderService {
       return config;
     }
 
-    // --- Kaggle / Colab Tunnel Validation ---
+    // --- Kaggle / Colab Worker Validation ---
     if (!url) {
       config.isConnected = false;
-      config.statusMessage = 'Tunnel URL is required';
+      config.statusMessage = 'Worker URL is required';
       this.saveConfig(config);
       return config;
     }
 
     try {
       new URL(url);
-
-      let isLive = false;
-      let gpu = provider === 'kaggle' ? 'Kaggle Tesla T4 (15.0 GB VRAM)' : 'Colab Tesla T4 (15.0 GB VRAM)';
-      let vramUsed = 2200;
-      let vramTotal = 15360;
-
-      try {
-        const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 3500);
-
-        const response = await fetch(`${url.replace(/\/$/, '')}/health`, {
-          method: 'GET',
-          headers: {
-            'Authorization': `Bearer ${token || 'anonymous'}`,
-            'Accept': 'application/json'
-          },
-          signal: controller.signal
-        });
-        clearTimeout(timeoutId);
-
-        if (response.ok) {
-          isLive = true;
-          const data = await response.json();
-          if (data.gpu_device) gpu = data.gpu_device;
-          if (data.vram_used) vramUsed = data.vram_used;
-          if (data.vram_total) vramTotal = data.vram_total;
-        }
-      } catch {
-        if (url.includes('trycloudflare.com') || url.includes('ngrok-free.app') || url.includes('loca.lt')) {
-          isLive = true;
-        } else {
-          throw new Error('Connection refused or timed out');
-        }
-      }
-
-      const elapsed = Math.round(performance.now() - startTime);
-
-      if (isLive) {
-        config.isConnected = true;
-        config.lastPingAt = new Date().toISOString();
-        config.latencyMs = elapsed > 0 ? elapsed : 74;
-        config.gpuDeviceName = gpu;
-        config.vramUsedMb = vramUsed;
-        config.vramTotalMb = vramTotal;
-        config.statusMessage = `Worker online · Heartbeat confirmed (${config.latencyMs}ms)`;
-
-        // Save into key vault
-        const keyRecord: ApiKeyRecord = {
-          id: `${provider}-${Date.now()}`,
-          provider,
-          label: keyLabel || `${provider.toUpperCase()} Session (${new Date().toLocaleTimeString()})`,
-          keyOrToken: token,
-          endpointUrl: url,
-          createdAt: new Date().toISOString(),
-          isActive: true,
-          accountDetails: gpu
-        };
-        this.saveApiKey(keyRecord);
-      } else {
-        config.isConnected = false;
-        config.statusMessage = 'Worker returned non-200 status code';
-      }
-    } catch (err) {
+    } catch {
       config.isConnected = false;
-      config.statusMessage = `Connection failed: ${err instanceof Error ? err.message : 'Timeout'}. Verify notebook is running.`;
+      config.statusMessage = 'Worker URL is not a valid http(s) URL';
+      this.saveConfig(config);
+      return config;
     }
 
-    this.saveConfig(config);
-    return config;
+    // A trycloudflare/ngrok hostname proves nothing: only a real /health answer counts.
+    this.providerConfigs[provider] = config;
+    const health = await this.probeWorker(config.endpointUrl, config.bearerToken);
+
+    if (!health.online) {
+      config.isConnected = false;
+      config.statusMessage = health.errorMessage || 'Worker unreachable';
+      this.saveConfig(config);
+      return config;
+    }
+
+    const applied = this.applyWorkerHealth(provider, health);
+    this.saveApiKey({
+      id: `${provider}-${Date.now()}`,
+      provider,
+      label: keyLabel?.trim() || `${provider.toUpperCase()} session (${new Date().toLocaleTimeString()})`,
+      keyOrToken: token,
+      endpointUrl: url,
+      createdAt: new Date().toISOString(),
+      isActive: true,
+      accountDetails: health.gpuDevice || `${provider.toUpperCase()} worker`
+    });
+
+    return applied;
   }
 
   /**
@@ -373,26 +370,37 @@ export class ProviderService {
     const startTime = performance.now();
     const config = this.providerConfigs[job.provider];
 
-    onProgress(15, `Preparing phoneme sequence for ${job.language}...`);
-    await new Promise((r) => setTimeout(r, 220));
+    onProgress(15, `Preparing ${job.language} synthesis request...`);
 
-    if (job.provider === 'huggingface') {
-      onProgress(45, 'Querying Hugging Face Inference Serverless GPU cluster...');
-    } else {
-      onProgress(45, `Synthesizing acoustic features via ${config.provider.toUpperCase()}...`);
+    const hasWorker = Boolean(config.isConnected && config.endpointUrl);
+
+    if (job.voice.isCloned && !hasWorker && job.provider !== 'huggingface') {
+      throw new Error(
+        `${job.provider.toUpperCase()} is offline — voice cloning needs a verified worker. ` +
+          'Open Inference Providers, start the worker and press Test & Save.'
+      );
     }
-    await new Promise((r) => setTimeout(r, 380));
+    onProgress(
+      45,
+      job.provider === 'huggingface'
+        ? 'Requesting Hugging Face inference...'
+        : hasWorker
+        ? `Dispatching to ${job.provider.toUpperCase()} worker...`
+        : 'No verified worker — using the built-in formant preview engine...'
+    );
 
-    onProgress(75, 'Synthesizing studio acoustic speech with neural voice engine...');
+    onProgress(75, 'Synthesizing speech...');
 
     let audioBlob: Blob | null = null;
     let durationSeconds = Math.max(2.5, job.text.trim().length / 14);
+    let failureDetail: string | null = null;
 
     try {
       const response = await fetch('/api/tts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
+          provider: job.provider,
           text: job.text,
           language: job.language,
           gender: job.voice.gender,
@@ -421,14 +429,27 @@ export class ProviderService {
             bytes[i] = binary.charCodeAt(i);
           }
           audioBlob = new Blob([bytes], { type: 'audio/wav' });
-          durationSeconds = Math.max(1.8, (bytes.length - 44) / (24000 * 2));
+          const rate = typeof data.sampleRate === 'number' && data.sampleRate > 0 ? data.sampleRate : 24000;
+          durationSeconds = Math.max(1.8, (bytes.length - 44) / (rate * 2));
+        } else {
+          failureDetail = 'response contained no audio';
         }
+      } else {
+        const detail = await response.json().catch(() => null);
+        failureDetail = detail?.error || detail?.detail || `HTTP ${response.status}`;
       }
-    } catch {
-      // ignore and use fallback
+    } catch (error) {
+      failureDetail = error instanceof Error ? error.message : 'network error';
     }
 
     if (!audioBlob) {
+      // Never substitute the built-in formant preview for a worker-backed request:
+      // that would look like the cloned voice succeeded when it did not.
+      if (hasWorker && job.provider !== 'huggingface') {
+        throw new Error(
+          `${job.provider.toUpperCase()} worker synthesis failed: ${failureDetail ?? 'unknown error'}`
+        );
+      }
       const synth = await synthesizeSpeechAudio({
         text: job.text,
         language: job.language,
