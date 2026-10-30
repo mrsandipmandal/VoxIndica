@@ -454,7 +454,13 @@ app.post('/api/providers/kaggle/test', async (req, res) => {
   }
 
   try {
-    const response = await kaggleRequest('/kernels/list?mine=true&pageSize=1', username, key);
+    // `/kernels/list?mine=true` was removed from the API (HTTP 400 "Invalid field 'mine'").
+    // `user=` on kernels requires real auth, so it validates the credentials truthfully.
+    const response = await kaggleRequest(
+      `/kernels/list?user=${encodeURIComponent(username)}&pageSize=1`,
+      username,
+      key
+    );
     if (response.ok) {
       return res.json({ ok: true, message: `Kaggle API reachable as ${username}`, username });
     }
@@ -517,12 +523,13 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
     const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
 
     if (!response.ok) {
+      const cleanBody = body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 200);
       return res.json({
         ok: false,
         message:
           response.status === 403
             ? 'Kaggle refused the push (403). Verify your account can run GPU kernels and that the phone/identity verification is complete.'
-            : `Kaggle push failed (HTTP ${response.status}): ${body.slice(0, 220)}`,
+            : `Kaggle push failed (HTTP ${response.status}): ${cleanBody}`,
         kernelUrl,
       });
     }
@@ -552,9 +559,13 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
     const statusText = (await statusResponse.text()).trim();
 
     if (!statusResponse.ok) {
+      const clean = statusText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
       return res.json({
         state: 'error',
-        message: `Kaggle status check failed (HTTP ${statusResponse.status}): ${statusText.slice(0, 160)}`,
+        message:
+          statusResponse.status === 404
+            ? 'That kernel does not exist yet — press Launch on Kaggle to push it first.'
+            : `Kaggle status check failed (HTTP ${statusResponse.status}): ${clean}`,
         kernelUrl,
       });
     }
