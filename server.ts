@@ -362,6 +362,78 @@ app.post('/api/tts', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Worker probe relay.
+//
+// The browser cannot tell DNS failure, TLS failure and CORS apart — every one
+// of them surfaces as `TypeError: Failed to fetch`. The server can see the real
+// reason, so the UI asks it to diagnose the endpoint before showing a message.
+// ---------------------------------------------------------------------------
+app.post('/api/providers/probe', async (req, res) => {
+  const raw = String(req.body?.url || '').trim().replace(/\/+$/, '');
+  const token = String(req.body?.token || '').trim();
+
+  if (!/^https?:\/\//i.test(raw)) {
+    return res.json({
+      ok: false,
+      message: 'Worker URL must start with http:// or https://',
+    });
+  }
+
+  let host = raw;
+  try {
+    host = new URL(raw).host;
+  } catch {
+    return res.json({ ok: false, message: `"${raw}" is not a valid URL` });
+  }
+
+  const started = Date.now();
+  try {
+    const response = await fetch(`${raw}/health`, {
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.timeout(15000),
+    });
+    const body = await response.text();
+    let health: any = null;
+    try {
+      health = JSON.parse(body);
+    } catch {
+      health = null;
+    }
+    return res.json({
+      ok: response.ok,
+      status: response.status,
+      latencyMs: Date.now() - started,
+      health,
+      message: response.ok
+        ? undefined
+        : `Worker answered HTTP ${response.status}: ${body.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 160)}`,
+    });
+  } catch (error: any) {
+    const code = error?.cause?.code || error?.code || '';
+    const name = error?.name || '';
+    let message: string;
+    if (code === 'ENOTFOUND' || code === 'EAI_AGAIN') {
+      message =
+        `${host} does not resolve in DNS. A Cloudflare quick tunnel stops existing as soon as the ` +
+        `worker process exits (or the Kaggle session restarts), so this URL is dead — start the worker ` +
+        `cell again and copy the fresh URL it prints.`;
+    } else if (code === 'ECONNREFUSED') {
+      message = `${host} refused the connection. The tunnel is up but nothing is listening on the worker port.`;
+    } else if (name === 'TimeoutError' || name === 'AbortError') {
+      message = `${host} did not answer /health within 15s. The tunnel may be up while the model is still loading.`;
+    } else if (String(code).includes('CERT') || String(code).includes('TLS')) {
+      message = `TLS handshake with ${host} failed (${code}). Check the tunnel URL and try again.`;
+    } else {
+      message = `Could not reach ${host}: ${error?.message || 'network error'}${code ? ` (${code})` : ''}`;
+    }
+    return res.json({ ok: false, code: code || null, message });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Kaggle API proxy — credentials arrive per request and are never persisted.
 //
 // Kaggle ships two credential generations:

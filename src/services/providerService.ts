@@ -535,6 +535,11 @@ export class ProviderService {
         errorMessage: modelLoaded ? undefined : data.model_error || 'Model not loaded on the worker'
       };
     } catch (error) {
+      // The browser collapses DNS, TLS and CORS failures into "Failed to fetch",
+      // so ask the server what actually happened before guessing in the UI.
+      const diagnosis = await this.diagnoseEndpoint(endpoint, token);
+      if (diagnosis) return diagnosis;
+
       return {
         online: false,
         checkedAt,
@@ -543,6 +548,47 @@ export class ProviderService {
             ? `Timed out after ${timeoutMs}ms — is the worker running?`
             : `Unreachable: ${error instanceof Error ? error.message : 'network error'}`
       };
+    }
+  }
+
+  /**
+   * Server-side /health probe used only when the browser fetch fails, so the
+   * error message names the real cause (dead tunnel vs. CORS vs. HTTP error).
+   */
+  private async diagnoseEndpoint(endpoint: string, token: string): Promise<WorkerHealth | null> {
+    const checkedAt = new Date().toISOString();
+    try {
+      const response = await fetch('/api/providers/probe', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: endpoint, token })
+      });
+      if (!response.ok) return null;
+      const data = await response.json();
+
+      if (data.ok && data.health) {
+        const health = data.health;
+        return {
+          online: health.status !== 'error',
+          status: health.status,
+          gpuDevice: health.gpu_device,
+          vramUsedMb: health.vram_used,
+          vramTotalMb: health.vram_total,
+          modelLoaded: health.model_loaded !== false,
+          modelError: health.model_error ?? null,
+          sampleRate: health.sample_rate ?? null,
+          platform: health.platform,
+          latencyMs: data.latencyMs,
+          checkedAt
+        };
+      }
+
+      if (typeof data.message === 'string' && data.message) {
+        return { online: false, checkedAt, errorMessage: data.message };
+      }
+      return null;
+    } catch {
+      return null;
     }
   }
 
