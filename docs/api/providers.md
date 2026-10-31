@@ -154,21 +154,32 @@ Create the key at <https://www.kaggle.com/settings/api>.
 
 ### Which credential should you create?
 
-Kaggle's settings page now offers two generations, and they are not interchangeable:
+Kaggle's settings page offers two generations. Both can push a kernel; only one can read live logs.
 
 | Page button | Result | Works with |
 |---|---|---|
-| **Create Legacy API Key** | downloads `kaggle.json` with `username` + `key` | `www.kaggle.com/api/v1` over **HTTP Basic** — this is what the Studio's push/status/output automation uses |
-| **Generate New Token** | one long access token string | `kaggle` CLI ≥ 1.8, `kagglehub`, and `api.kaggle.com/v1` over **Bearer** |
+| **Generate New Token** *(recommended)* | a `KGAT_…` access token | `Authorization: Bearer` against both `www.kaggle.com/api/v1` (push/status/output) **and** `api.kaggle.com/v1` (live session log stream) |
+| **Create Legacy API Key** | downloads `kaggle.json` with `username` + `key` | `Authorization: Basic` against `www.kaggle.com/api/v1` only — no live logs, so the tunnel URL must be copied from the notebook |
 
-So for the in-app **Launch on Kaggle** button, use the legacy pair. The Studio's Test button tries Basic first and
-then Bearer, and stores whichever scheme Kaggle accepted, so a new access token still works if Kaggle's REST
-endpoints honour it. If both are rejected, the message says exactly that instead of blaming your password.
+Use **Generate New Token** and paste `username` + `KGAT_…` into the Studio. The Studio then reads
+`GetKernelSessionLogsStream` while the kernel runs and fills in the tunnel URL and bearer token automatically.
+
+```bash
+# v2 host, KGAT token — same call the Studio's poll route makes
+curl -sN -X POST \
+  https://api.kaggle.com/v1/kernels.KernelsApiService/GetKernelSessionLogsStream \
+  -H "Authorization: Bearer $KAGGLE_API_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{"userName":"me","kernelSlug":"voxindica-voxcpm2-worker","waitForLogsUrlSeconds":20}'
+```
 
 ```bash
 curl -s -u "$KAGGLE_USERNAME:$KAGGLE_KEY" \
   "https://www.kaggle.com/api/v1/kernels/list?user=$KAGGLE_USERNAME&pageSize=5"
 ```
+
+Note: `/kernels/push` takes **JSON** (`KernelPushRequest`), not a multipart upload. Sending multipart returned
+`400 Error reading JToken from JsonReader` before this was fixed.
 
 ### Push a notebook (start the worker)
 
@@ -183,7 +194,7 @@ curl -s -u "$KAGGLE_USERNAME:$KAGGLE_KEY" \
 ```bash
 curl -s -u "$KAGGLE_USERNAME:$KAGGLE_KEY" -X POST \
   https://www.kaggle.com/api/v1/kernels/push \
-  -F 'metadata={"id":"me/voxindica-worker","title":"VoxIndica Worker","code_file":"voxindica_worker.ipynb","language":"python","kernel_type":"notebook","is_private":"true","enable_gpu":"true","enable_internet":"true","dataset_sources":[],"competition_sources":[],"kernel_sources":[]}' \
+  -F 'metadata={"id":"me/voxindica-voxcpm2-worker","title":"VoxIndica Worker","code_file":"voxindica_worker.ipynb","language":"python","kernel_type":"notebook","is_private":"true","enable_gpu":"true","enable_internet":"true","dataset_sources":[],"competition_sources":[],"kernel_sources":[]}' \
   -F 'fileName=voxindica_worker.ipynb' \
   -F 'fileData=@notebooks/kaggle/voxindica_worker.ipynb'
 ```

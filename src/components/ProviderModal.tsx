@@ -128,8 +128,8 @@ ${credentialExport}
 
 cd notebooks/kaggle
 kaggle kernels push -p .
-kaggle kernels status ${username}/voxindica-worker
-kaggle kernels output ${username}/voxindica-worker -p ./worker-output`;
+kaggle kernels status ${username}/voxindica-voxcpm2-worker
+kaggle kernels output ${username}/voxindica-voxcpm2-worker -p ./worker-output`;
   }
 
   return `# There is no official Colab CLI or runtime API.
@@ -334,7 +334,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
       elapsedSeconds: elapsed
     }));
 
-    if (result.state === 'error' || attempt >= 40) return;
+    if (result.state === 'error' || attempt >= 120) return;
     pollTimer.current = window.setTimeout(() => void pollKaggleSession(attempt + 1), 15000);
   };
 
@@ -881,11 +881,11 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
                   </div>
                 </div>
                 <p className="text-[11px] text-slate-500 leading-relaxed">
-                  On kaggle.com/settings/api choose <span className="text-slate-300">Create Legacy API Key</span> and
-                  paste the <span className="font-mono">username</span> + <span className="font-mono">key</span> from{' '}
-                  <span className="font-mono">kaggle.json</span> — that pair is what the REST automation uses. A token
-                  from <span className="text-slate-300">Generate New Token</span> is also tried (Bearer) and accepted if
-                  Kaggle allows it; the test below reports which scheme actually worked.
+                  On kaggle.com/settings/api press <span className="text-slate-300">Generate New Token</span> and paste the{' '}
+                  <span className="font-mono">KGAT_…</span> value with your username. That token powers both the REST
+                  calls and the live kernel log stream, which is how the tunnel URL fills itself in. A legacy{' '}
+                  <span className="font-mono">kaggle.json</span> pair also works, but Kaggle hides live logs from it, so
+                  you would have to copy the tunnel URL out of the notebook yourself.
                 </p>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-slate-500">

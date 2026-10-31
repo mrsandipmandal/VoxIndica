@@ -15,8 +15,13 @@ dotenv.config();
 const execAsync = promisify(exec);
 
 const KAGGLE_API = 'https://www.kaggle.com/api/v1';
+// Newer (KGAT) access tokens talk to the v2 host. Only this host exposes the live
+// session log stream that carries the tunnel URL while the kernel is still running.
+const KAGGLE_API_V2 = 'https://api.kaggle.com/v1';
 const WORKER_TIMEOUT_MS = Number(process.env.WORKER_TIMEOUT_MS) || 120000;
-const KAGGLE_KERNEL_SLUG = 'voxindica-worker';
+// Kaggle slugs a pushed kernel from its title; "VoxIndica VoxCPM2 Worker"
+// becomes this slug. Keep it in sync or /kernels/status returns 404.
+const KAGGLE_KERNEL_SLUG = 'voxindica-voxcpm2-worker';
 const WORKER_PLATFORMS = new Set(['local', 'kaggle', 'colab']);
 
 const app = express();
@@ -518,6 +523,143 @@ function extractWorkerSession(entries: Map<string, Buffer>): { url?: string; tok
   return null;
 }
 
+/** Flatten Kaggle's SSE log frames into the text the worker printed. */
+function flattenLogStream(raw: string): string {
+  const parts: string[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith(':')) continue;
+    const frame = /^data:\s*(.*)$/.exec(trimmed);
+    if (!frame) {
+      parts.push(trimmed);
+      continue;
+    }
+    const payload = frame[1].trim();
+    if (payload === 'END_OF_LOG') break;
+    try {
+      const parsed = JSON.parse(payload);
+      if (typeof parsed?.data === 'string') parts.push(parsed.data);
+    } catch {
+      parts.push(payload);
+    }
+  }
+  return parts.join('');
+}
+
+/**
+ * Read the live session log of a running kernel.
+ *
+ * Kaggle's own SDK uses `GetKernelSessionLogsStream` (v2 host, Bearer token).
+ * The old `/kernels/output` archive is empty until a run finishes, so a tunnel
+ * URL printed mid-run can only be found here. Bounded on purpose: the stream is
+ * long-lived, and we only need the first "TUNNEL URL / BEARER TOKEN" block.
+ */
+async function fetchKernelLogs(
+  credentials: KaggleCredentials,
+  kernelSlug: string,
+  timeoutMs = 12000
+): Promise<string> {
+  // v2 only accepts the new KGAT access tokens, not legacy username/key pairs.
+  if (!credentials.key.startsWith('KGAT_')) return '';
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let raw = '';
+  try {
+    const response = await fetch(
+      `${KAGGLE_API_V2}/kernels.KernelsApiService/GetKernelSessionLogsStream`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${credentials.key}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userName: credentials.username,
+          kernelSlug,
+          waitForLogsUrlSeconds: 20,
+        }),
+        signal: controller.signal,
+      }
+    );
+    if (!response.ok || !response.body) return '';
+
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    while (raw.length < 4_000_000) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      raw += decoder.decode(value, { stream: true });
+      // Stop as soon as the session block has been printed.
+      if (/BEARER\s*TOKEN\s*:/i.test(raw) && /trycloudflare\.com/i.test(raw)) break;
+    }
+    await reader.cancel().catch(() => undefined);
+  } catch {
+    // Timeout or abort: keep whatever arrived before the deadline.
+  } finally {
+    clearTimeout(timer);
+  }
+  return flattenLogStream(raw);
+}
+
+interface KaggleKernelStatus {
+  httpStatus: number;
+  status: string;
+  failureMessage?: string;
+}
+
+/**
+ * Session status via the v2 host. `www.kaggle.com/api/v1/kernels/status/...` was
+ * removed and now returns an HTML 404, which is why polling used to claim the
+ * kernel did not exist. v2 also returns `failureMessage` for errored runs.
+ */
+async function fetchKernelStatus(credentials: KaggleCredentials): Promise<KaggleKernelStatus> {
+  if (!credentials.key.startsWith('KGAT_')) {
+    return { httpStatus: 0, status: 'UNKNOWN' };
+  }
+  const response = await fetch(
+    `${KAGGLE_API_V2}/kernels.KernelsApiService/GetKernelSessionStatus`,
+    {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${credentials.key}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        userName: credentials.username,
+        kernelSlug: KAGGLE_KERNEL_SLUG,
+      }),
+      signal: AbortSignal.timeout(20000),
+    }
+  );
+  if (!response.ok) return { httpStatus: response.status, status: '' };
+  const data = (await response.json()) as { status?: string; failureMessage?: string };
+  return {
+    httpStatus: response.status,
+    status: String(data.status || ''),
+    failureMessage: data.failureMessage,
+  };
+}
+
+/** Turn Kaggle's failure payload (a JSON array of log frames) into one readable line. */
+function summarizeFailure(raw: string): string {
+  let text = raw;
+  if (raw.trim().startsWith('[')) {
+    try {
+      const frames = JSON.parse(raw) as Array<{ data?: string; message?: string }>;
+      text = frames.map((frame) => frame.data || frame.message || '').join('');
+    } catch {
+      // keep the raw payload
+    }
+  }
+  const lines = text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const errorLine = lines.filter((line) => /(?:Error|Exception|Traceback)/i.test(line)).slice(-1)[0];
+  return (errorLine || lines.slice(-1)[0] || raw).slice(0, 400);
+}
+
 async function kaggleRequest(
   pathname: string,
   credentials: KaggleCredentials,
@@ -617,28 +759,43 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
   }
 
   const notebook = await fs.promises.readFile(notebookPath, 'utf8');
+
+  // Kaggle's /kernels/push is a JSON API (KernelPushRequest), not multipart.
+  // The CLI normalises the notebook first: cell sources become one string and
+  // previous outputs are cleared, otherwise Kaggle rejects the payload.
+  let notebookJson: any;
+  try {
+    notebookJson = JSON.parse(notebook);
+  } catch {
+    return res.json({ ok: false, message: 'The worker notebook on disk is not valid JSON' });
+  }
+  for (const cell of notebookJson.cells ?? []) {
+    if (cell.cell_type === 'code') cell.outputs = [];
+    if (Array.isArray(cell.source)) cell.source = cell.source.join('');
+  }
+
   const metadata = {
-    id: `${username}/${KAGGLE_KERNEL_SLUG}`,
-    title: 'VoxIndica VoxCPM2 Worker',
-    code_file: 'voxindica_worker.ipynb',
+    slug: `${username}/${KAGGLE_KERNEL_SLUG}`,
+    newTitle: 'VoxIndica VoxCPM2 Worker',
+    text: JSON.stringify(notebookJson),
     language: 'python',
-    kernel_type: 'notebook',
-    is_private: 'true',
-    enable_gpu: 'true',
-    enable_internet: 'true',
-    dataset_sources: datasetSource ? [datasetSource] : [],
-    competition_sources: [],
-    kernel_sources: [],
-    keywords: ['tts', 'voice-cloning', 'voxcpm2'],
+    kernelType: 'notebook',
+    isPrivate: true,
+    enableGpu: true,
+    enableInternet: true,
+    datasetDataSources: datasetSource ? [datasetSource] : [],
+    competitionDataSources: [],
+    kernelDataSources: [],
+    modelDataSources: [],
+    categoryIds: ['tts', 'voice-cloning', 'voxcpm2'],
   };
 
-  const form = new FormData();
-  form.append('metadata', JSON.stringify(metadata));
-  form.append('fileName', 'voxindica_worker.ipynb');
-  form.append('fileData', notebook);
-
   try {
-    const response = await kaggleRequest('/kernels/push', credentials, { method: 'POST', body: form });
+    const response = await kaggleRequest('/kernels/push', credentials, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(metadata),
+    });
     const body = await response.text();
     const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
 
@@ -682,26 +839,56 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
   const kernelPath = `${username}/${KAGGLE_KERNEL_SLUG}`;
 
   try {
-    const statusResponse = await kaggleRequest(`/kernels/status/${kernelPath}`, credentials);
-    const statusText = (await statusResponse.text()).trim();
-
-    if (!statusResponse.ok) {
-      const clean = statusText.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 120);
+    const kernelStatus = await fetchKernelStatus(credentials);
+    if (kernelStatus.httpStatus === 0) {
       return res.json({
         state: 'error',
         message:
-          statusResponse.status === 404
-            ? 'That kernel does not exist yet — press Launch on Kaggle to push it first.'
-            : `Kaggle status check failed (HTTP ${statusResponse.status}): ${clean}`,
+          'Live status needs a Kaggle access token (KGAT_…). Kaggle removed the old username/key status endpoint. Create one at kaggle.com/settings/api → Generate New Token, then Verify & save again.',
+        kernelUrl,
+      });
+    }
+    if (kernelStatus.httpStatus === 404) {
+      return res.json({
+        state: 'error',
+        message: 'That kernel does not exist yet — press Launch on Kaggle to push it first.',
+        kernelUrl,
+      });
+    }
+    if (kernelStatus.httpStatus !== 200) {
+      return res.json({
+        state: 'error',
+        message: `Kaggle status check failed (HTTP ${kernelStatus.httpStatus}).`,
         kernelUrl,
       });
     }
 
-    if (/COMPLETE|ERROR|CANCEL/i.test(statusText)) {
+    if (/COMPLETE|ERROR|CANCEL/i.test(kernelStatus.status)) {
+      const failedLog = await fetchKernelLogs(credentials, KAGGLE_KERNEL_SLUG, 8000);
+      // Kaggle's failureMessage is sometimes empty and the log endpoint hands back
+      // the same JSON frame array, so summarize whichever one we actually got.
+      const detail = summarizeFailure(kernelStatus.failureMessage || failedLog);
       return res.json({
         state: 'error',
-        message:
-          'The kernel finished or errored, so the worker is no longer serving. Open the kernel log for the real error and push again.',
+        message: detail
+          ? `The kernel stopped before the tunnel came up: ${detail.slice(0, 300)}`
+          : 'The kernel finished or errored, so the worker is no longer serving. Open the kernel log for the real error and push again.',
+        kernelUrl,
+      });
+    }
+
+    // A running kernel prints "TUNNEL URL / BEARER TOKEN" long before its output
+    // archive exists. Read the live log stream first — this is what lets the
+    // Studio fill both boxes without copy-paste.
+    const liveLog = await fetchKernelLogs(credentials, KAGGLE_KERNEL_SLUG);
+    const liveUrl = liveLog.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/i)?.[0];
+    const liveToken = liveLog.match(/BEARER\s*TOKEN\s*:\s*([a-f0-9]{16,})/i)?.[1];
+    if (liveUrl && liveToken) {
+      return res.json({
+        state: 'connected',
+        message: 'Tunnel is live — fetched from the running kernel log',
+        url: liveUrl,
+        token: liveToken,
         kernelUrl,
       });
     }
@@ -721,12 +908,19 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
       }
     }
 
+    const lastLogLine = liveLog
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line && !line.startsWith('data:'))
+      .slice(-1)[0];
+    const queued = /QUEUED|PENDING/i.test(kernelStatus.status);
     return res.json({
-      state: /QUEUED|PENDING/i.test(statusText) ? 'queued' : 'running',
-      message:
-        /QUEUED|PENDING/i.test(statusText)
-          ? 'Waiting for a GPU slot…'
-          : `Kernel is ${statusText.replace('KernelWorkerStatus.', '')}, but Kaggle has not published its output yet.`,
+      state: queued ? 'queued' : 'running',
+      message: queued
+        ? 'Waiting for a GPU slot…'
+        : lastLogLine
+          ? `Kernel is running — ${lastLogLine.slice(0, 200)}`
+          : `Kernel is ${kernelStatus.status || 'RUNNING'}, but no tunnel URL has been printed yet.`,
       kernelUrl,
     });
   } catch (error: any) {

@@ -1,5 +1,5 @@
 {
-  "id": "__KAGGLE_USERNAME__/voxindica-worker",
+  "id": "__KAGGLE_USERNAME__/voxindica-voxcpm2-worker",
   "title": "VoxIndica VoxCPM2 Worker",
   "code_file": "voxindica_worker.ipynb",
   "language": "python",

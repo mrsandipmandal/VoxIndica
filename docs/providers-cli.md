@@ -31,14 +31,14 @@ kaggle datasets download -d mrsandipmandal/sample-file -p ./reference --unzip
 
 # 5. Push the worker notebook (generates a new kernel version and starts it)
 cd notebooks/kaggle
-# edit kernel-metadata.json -> set "id" to "YOUR_USERNAME/voxindica-worker"
+# edit kernel-metadata.json -> set "id" to "YOUR_USERNAME/voxindica-voxcpm2-worker"
 kaggle kernels push -p .
 
 # 6. Watch it
-kaggle kernels status YOUR_USERNAME/voxindica-worker
+kaggle kernels status YOUR_USERNAME/voxindica-voxcpm2-worker
 
 # 7. Fetch logs/output (only after the kernel finishes)
-kaggle kernels output YOUR_USERNAME/voxindica-worker -p ./worker-output
+kaggle kernels output YOUR_USERNAME/voxindica-voxcpm2-worker -p ./worker-output
 ```
 
 Notes:

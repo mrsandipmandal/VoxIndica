@@ -142,19 +142,26 @@ def locate_reference() -> str:
         hits = sorted(p for p in root.glob(pattern) if p.is_file())
         if hits:
             return str(hits[0])
-    raise FileNotFoundError(
-        "No .wav found under /kaggle/input. Add your dataset in the notebook sidebar "
-        "(Add Input) or set REFERENCE_OVERRIDE above."
+    # Not fatal: the Studio uploads a reference clip with every cloning request,
+    # so the worker can start with no bundled default.
+    print(
+        "No .wav under /kaggle/input. Starting without a default reference — "
+        "the Studio sends one with each clone_voice request."
     )
+    return ""
 
 
 REFERENCE_WAV = locate_reference()
-data, rate = sf.read(REFERENCE_WAV)
-print("Reference audio:", REFERENCE_WAV)
-print("Sample rate:", rate, "Hz")
-print("Duration:", round(len(data) / rate, 2), "seconds")
-print("Size:", Path(REFERENCE_WAV).stat().st_size, "bytes")
-display(Audio(data, rate=rate))
+if REFERENCE_WAV:
+    data, rate = sf.read(REFERENCE_WAV)
+    print("Reference audio:", REFERENCE_WAV)
+    print("Sample rate:", rate, "Hz")
+    print("Duration:", round(len(data) / rate, 2), "seconds")
+    print("Size:", Path(REFERENCE_WAV).stat().st_size, "bytes")
+    display(Audio(data, rate=rate))
+else:
+    print("Default reference: none (per-request audio will be used)")
+
 '''
 
 COLAB_REF_CELL = '''
@@ -255,6 +262,16 @@ print()
 print("Session file:", Path("worker_session.json").resolve())
 '''
 
+KEEPALIVE_CELL = '''
+# Kaggle (and Colab) stop the process as soon as the last cell finishes, which also
+# kills the Cloudflare tunnel. This cell blocks on purpose so the worker stays reachable.
+import time
+
+print("Worker is live. Leave this cell running — stop the session to shut it down.")
+while True:
+    time.sleep(600)
+'''
+
 TROUBLESHOOTING = '''
 ## Troubleshooting
 
@@ -351,6 +368,15 @@ If the session resets, rerun cell 3 and then this cell.
         code(SERVE_CELL),
         md("## 7. Confirm the worker is healthy"),
         code(STATUS_CELL),
+        md(
+            """
+## 8. Keep the session alive
+
+The worker runs in a background thread, so the notebook would otherwise finish and Kaggle would stop the
+process — taking the tunnel down with it. This last cell blocks on purpose.
+"""
+        ),
+        code(KEEPALIVE_CELL),
         md(TROUBLESHOOTING),
     ]
     return notebook(cells, platform)
@@ -525,7 +551,7 @@ def main() -> int:
     }
 
     kernel_metadata = {
-        "id": "__KAGGLE_USERNAME__/voxindica-worker",
+        "id": "__KAGGLE_USERNAME__/voxindica-voxcpm2-worker",
         "title": "VoxIndica VoxCPM2 Worker",
         "code_file": "voxindica_worker.ipynb",
         "language": "python",
