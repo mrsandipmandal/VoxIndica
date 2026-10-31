@@ -29,6 +29,7 @@ import {
   ApiKeyRecord,
   ProviderAuthMethod,
   KaggleLaunchState,
+  KaggleAuthScheme,
   WorkerHealth,
   LocalHardwareInfo
 } from '../types';
@@ -77,7 +78,7 @@ const endpointPort = (endpointUrl?: string): string => {
 
 const buildCliCommands = (
   provider: InferenceProvider,
-  creds: { username: string; key: string } | null,
+  creds: { username: string; key: string; auth: KaggleAuthScheme } | null,
   config: ProviderEndpointConfig,
   revealed: boolean
 ): string => {
@@ -113,11 +114,17 @@ curl -s -X POST https://api-inference.huggingface.co/models/facebook/mms-tts-ben
 
   if (provider === 'kaggle') {
     const username = creds?.username || 'your-username';
-    const key = creds ? formatSecret(creds.key, revealed) : 'your-api-key';
+    const secret = creds ? formatSecret(creds.key, revealed) : 'your-api-key';
+    // New-style access tokens are exported as KAGGLE_API_TOKEN; legacy kaggle.json
+    // pairs use KAGGLE_USERNAME + KAGGLE_KEY. Emit the one the user actually saved.
+    const credentialExport =
+      creds?.auth === 'bearer'
+        ? `export KAGGLE_API_TOKEN="${secret}"   # Generate New Token (CLI 1.8+)`
+        : `export KAGGLE_KEY="${secret}"   # Create Legacy API Key (kaggle.json)`;
     return `python -m pip install --upgrade kaggle
 
 export KAGGLE_USERNAME="${username}"
-export KAGGLE_KEY="${key}"
+${credentialExport}
 
 cd notebooks/kaggle
 kaggle kernels push -p .
