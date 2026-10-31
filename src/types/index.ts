@@ -9,6 +9,13 @@ export type JobStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' |
 /** API is the default path; the CLI view only shows copyable commands. */
 export type ProviderAuthMethod = 'api' | 'cli';
 
+/**
+ * Kaggle has two credential generations:
+ * - `basic`: username + legacy API key (`kaggle.json`), used by www.kaggle.com/api/v1
+ * - `bearer`: single access token ("Generate New Token"), used by kaggle CLI >= 1.8 / kagglehub
+ */
+export type KaggleAuthScheme = 'basic' | 'bearer';
+
 /** Hardware facts read from the browser — no server round-trip required. */
 export interface LocalHardwareInfo {
   gpuRenderer: string | null;
@@ -57,6 +64,8 @@ export interface ApiKeyRecord {
   createdAt: string;
   isActive: boolean;
   accountDetails?: string;
+  /** Kaggle only: which header the API accepted for this credential. */
+  authScheme?: KaggleAuthScheme;
 }
 
 export interface ModelCapability {

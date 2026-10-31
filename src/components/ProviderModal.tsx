@@ -18,7 +18,10 @@ import {
   Copy,
   Wifi,
   WifiOff,
-  Loader2
+  Loader2,
+  Eye,
+  EyeOff,
+  MousePointerClick
 } from 'lucide-react';
 import {
   InferenceProvider,
@@ -55,37 +58,77 @@ const DOC_LINKS: Record<InferenceProvider, { href: string; label: string }> = {
   colab: { href: '/docs/providers-cli.md', label: 'Colab reality check' }
 };
 
-const CLI_COMMANDS: Record<InferenceProvider, string> = {
-  local: `# one-time
+const formatSecret = (value: string, revealed: boolean): string => {
+  if (!value) return '<not saved>';
+  if (revealed) return value;
+  const head = value.slice(0, 4);
+  return `${head}${'•'.repeat(Math.min(24, Math.max(6, value.length - 4)))}`;
+};
+
+/** Port parsed from a saved endpoint, so CLI commands match the running worker. */
+const endpointPort = (endpointUrl?: string): string => {
+  try {
+    const parsed = new URL(endpointUrl ?? '');
+    return parsed.port || '8000';
+  } catch {
+    return '8000';
+  }
+};
+
+const buildCliCommands = (
+  provider: InferenceProvider,
+  creds: { username: string; key: string } | null,
+  config: ProviderEndpointConfig,
+  revealed: boolean
+): string => {
+  if (provider === 'local') {
+    const port = endpointPort(config.endpointUrl);
+    const tokenLine = config.bearerToken
+      ? `export VOXINDICA_WORKER_TOKEN="${formatSecret(config.bearerToken, revealed)}"`
+      : 'export VOXINDICA_WORKER_TOKEN="<token printed by the worker>"';
+    return `# one-time
 bash scripts/local/install_local.sh
 
 # every session
 source .venv-worker/bin/activate
-python scripts/local/run_worker.py --port 8000
+${tokenLine}
+python scripts/local/run_worker.py --port ${port}
 
 # verify from the terminal
-python scripts/local/run_worker.py --check`,
-  huggingface: `python -m pip install -U "huggingface_hub[cli]"
+python scripts/local/run_worker.py --check --port ${port}`;
+  }
 
-hf auth login          # paste your hf_... token
-hf auth whoami
+  if (provider === 'huggingface') {
+    const token = formatSecret(config.bearerToken, revealed);
+    return `python -m pip install -U "huggingface_hub[cli]"
+
+export HF_TOKEN="${token}"
+curl -s https://huggingface.co/api/whoami-v2 -H "Authorization: Bearer $HF_TOKEN"
 
 curl -s -X POST https://api-inference.huggingface.co/models/facebook/mms-tts-ben \\
   -H "Authorization: Bearer $HF_TOKEN" \\
   -H "Content-Type: application/json" \\
-  -d '{"inputs":"নমস্কার"}' -o out.wav`,
-  kaggle: `python -m pip install --upgrade kaggle
+  -d '{"inputs":"নমস্কার"}' -o out.wav`;
+  }
 
-export KAGGLE_USERNAME="your-username"
-export KAGGLE_KEY="your-api-key"
+  if (provider === 'kaggle') {
+    const username = creds?.username || 'your-username';
+    const key = creds ? formatSecret(creds.key, revealed) : 'your-api-key';
+    return `python -m pip install --upgrade kaggle
+
+export KAGGLE_USERNAME="${username}"
+export KAGGLE_KEY="${key}"
 
 cd notebooks/kaggle
 kaggle kernels push -p .
-kaggle kernels status YOUR_USERNAME/voxindica-worker`,
-  colab: `# There is no official Colab CLI or runtime API.
+kaggle kernels status ${username}/voxindica-worker
+kaggle kernels output ${username}/voxindica-worker -p ./worker-output`;
+  }
+
+  return `# There is no official Colab CLI or runtime API.
 # Open the notebook in your browser and press "Run all",
 # or use Colab Enterprise on Vertex AI (paid, GCP API).
-# The Studio's Colab tab is built around the browser flow.`
+# The Studio's Colab tab is built around the browser flow.`;
 };
 
 const platformFor = (provider: InferenceProvider): WorkerPlatform =>
@@ -138,6 +181,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
   const [showTunnelExplainer, setShowTunnelExplainer] = useState(false);
   const [showScriptModal, setShowScriptModal] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [revealCli, setRevealCli] = useState(false);
 
   const pollTimer = useRef<number | null>(null);
   const launchedAt = useRef<number>(0);
@@ -306,6 +350,17 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
     pollTimer.current = window.setTimeout(() => void pollKaggleSession(1), 15000);
   };
 
+  const handleRefreshKaggleSession = async () => {
+    stopPolling();
+    setLaunch({
+      phase: 'queued',
+      message: 'Fetching session from Kaggle…',
+      kernelUrl: launch.kernelUrl,
+    });
+    launchedAt.current = Date.now();
+    pollKaggleSession(1);
+  };
+
   const handleActivateSavedKey = (keyId: string) => {
     providerService.setActiveApiKey(selectedTab, keyId);
     setSavedKeys(providerService.getAllApiKeys());
@@ -380,16 +435,42 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
             <RefreshCw className={`w-3.5 h-3.5 ${probing === selectedTab ? 'animate-spin' : ''}`} />
             {probing === selectedTab ? 'Probing /health…' : 'Test & Save'}
           </button>
+          {selectedTab === 'kaggle' && (
+            <button
+              type="button"
+              onClick={() => void handleRefreshKaggleSession()}
+              disabled={launch.phase === 'pushing' || launch.phase === 'queued' || launch.phase === 'running'}
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+            >
+              <RefreshCw className="w-3 h-3 shrink-0" />
+              Re-fetch from Kaggle
+            </button>
+          )}
         </div>
       </div>
     </div>
   );
 
+  const kaggleCreds = providerService.getKaggleCredentials();
+  const cliText = buildCliCommands(selectedTab, kaggleCreds, currentConfig, revealCli);
+  const hasSavedSecret = selectedTab === 'kaggle' ? Boolean(kaggleCreds) : Boolean(currentConfig.bearerToken);
+
   const renderCliGuide = () => (
     <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg space-y-3">
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between gap-2">
         <SectionLabel>Optional CLI path · {PROVIDER_LABELS[selectedTab]}</SectionLabel>
         <div className="flex items-center gap-2">
+          {hasSavedSecret && (
+            <button
+              type="button"
+              onClick={() => setRevealCli((prev) => !prev)}
+              className="text-[11px] text-slate-300 hover:text-white px-2 py-1 rounded border border-slate-700 hover:border-slate-600 flex items-center gap-1 cursor-pointer"
+              title="Show or hide the saved secret inside the commands"
+            >
+              {revealCli ? <EyeOff className="w-3 h-3" /> : <Eye className="w-3 h-3" />}
+              {revealCli ? 'Hide' : 'Show'}
+            </button>
+          )}
           <a
             href={DOC_LINKS[selectedTab].href}
             target="_blank"
@@ -400,7 +481,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
           </a>
           <button
             type="button"
-            onClick={() => void copyToClipboard(CLI_COMMANDS[selectedTab], 'Commands')}
+            onClick={() => void copyToClipboard(cliText, 'Commands')}
             className="text-[11px] text-slate-300 hover:text-white px-2 py-1 rounded border border-slate-700 hover:border-slate-600 flex items-center gap-1 cursor-pointer"
           >
             {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
@@ -409,12 +490,33 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
         </div>
       </div>
       <pre className="bg-slate-950 border border-slate-800 rounded-lg p-3 text-[11px] leading-relaxed text-slate-300 overflow-x-auto font-mono whitespace-pre">
-        {CLI_COMMANDS[selectedTab]}
+        {cliText}
       </pre>
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        The API path above is complete on its own. These commands only exist for people who prefer a terminal —
-        they call exactly the same endpoints.
+        {hasSavedSecret
+          ? 'Pre-filled with your saved values. Secrets stay masked until you press Show, so a copied command is only runnable after you reveal them.'
+          : 'Nothing is saved yet, so the placeholders stay as-is. Add a credential in the API tab and these commands fill themselves in.'}
       </p>
+      <div className="flex flex-wrap items-center gap-2 pt-1">
+        <button
+          type="button"
+          onClick={() => {
+            setAuthMethod('api');
+            setFeedback({
+              ok: true,
+              message: 'API path selected — every command here has a one-click equivalent above.',
+              provider: selectedTab
+            });
+          }}
+          className="px-3 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-semibold flex items-center gap-1.5 cursor-pointer"
+        >
+          <MousePointerClick className="w-3.5 h-3.5" />
+          Run this via API instead
+        </button>
+        <span className="text-[11px] text-slate-500">
+          No terminal needed — these commands call the same endpoints the buttons above already use.
+        </span>
+      </div>
     </div>
   );
 
@@ -728,14 +830,14 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
             <div className="space-y-4">
               <div className="p-4 bg-slate-900 border border-slate-800 rounded-lg space-y-3">
                 <div className="flex items-center justify-between">
-                  <SectionLabel>Kaggle credentials (HTTP Basic)</SectionLabel>
+                  <SectionLabel>Kaggle credentials</SectionLabel>
                   <a
-                    href="https://www.kaggle.com/settings"
+                    href="https://www.kaggle.com/settings/api"
                     target="_blank"
                     rel="noreferrer"
                     className="text-[11px] text-amber-400 hover:underline flex items-center gap-1"
                   >
-                    Create API token <ExternalLink className="w-3 h-3" />
+                    Open API settings <ExternalLink className="w-3 h-3" />
                   </a>
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -750,16 +852,25 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
                     />
                   </div>
                   <div>
-                    <label className="block text-[11px] font-medium text-slate-400 mb-1">API key</label>
+                    <label className="block text-[11px] font-medium text-slate-400 mb-1">
+                      API key or access token
+                    </label>
                     <input
                       type="password"
-                      placeholder="paste the key from kaggle.json"
+                      placeholder="from kaggle.json or Generate New Token"
                       value={kaggleKey}
                       onChange={(e) => setKaggleKey(e.target.value)}
                       className="w-full bg-slate-950 border border-slate-700 rounded-lg px-3 py-2 text-xs text-slate-100 placeholder:text-slate-600 focus:outline-none focus:border-amber-400 font-mono"
                     />
                   </div>
                 </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  On kaggle.com/settings/api choose <span className="text-slate-300">Create Legacy API Key</span> and
+                  paste the <span className="font-mono">username</span> + <span className="font-mono">key</span> from{' '}
+                  <span className="font-mono">kaggle.json</span> — that pair is what the REST automation uses. A token
+                  from <span className="text-slate-300">Generate New Token</span> is also tried (Bearer) and accepted if
+                  Kaggle allows it; the test below reports which scheme actually worked.
+                </p>
                 <div className="flex items-center justify-between gap-2">
                   <span className="text-[11px] text-slate-500">
                     Sent per request to this app's server; never stored server-side.

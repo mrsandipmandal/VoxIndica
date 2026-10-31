@@ -3,6 +3,7 @@ import {
   ProviderEndpointConfig,
   SynthesisJob,
   ApiKeyRecord,
+  KaggleAuthScheme,
   WorkerHealth
 } from '../types';
 import { synthesizeSpeechAudio } from '../utils/audio';
@@ -564,17 +565,21 @@ export class ProviderService {
   }
 
   // --- Kaggle API (routed through server.ts, credentials never persisted server-side) ---
-  public getKaggleCredentials(): { username: string; key: string } | null {
+  public getKaggleCredentials(): { username: string; key: string; auth: KaggleAuthScheme } | null {
     const active = this.apiKeys.find((k) => k.provider === 'kaggle' && k.isActive);
     if (!active || !active.keyOrToken || !active.accountDetails) return null;
-    return { username: active.accountDetails, key: active.keyOrToken };
+    return {
+      username: active.accountDetails,
+      key: active.keyOrToken,
+      auth: active.authScheme ?? 'basic'
+    };
   }
 
   public async testKaggleCredentials(
     username: string,
     key: string,
     label?: string
-  ): Promise<{ ok: boolean; message: string; account?: string }> {
+  ): Promise<{ ok: boolean; message: string; account?: string; auth?: KaggleAuthScheme }> {
     try {
       const response = await fetch('/api/providers/kaggle/test', {
         method: 'POST',
@@ -582,6 +587,7 @@ export class ProviderService {
         body: JSON.stringify({ username, key })
       });
       const data = await response.json();
+      const scheme: KaggleAuthScheme = data.auth === 'bearer' ? 'bearer' : 'basic';
       if (data.ok) {
         this.saveApiKey({
           id: `kaggle-${username}`,
@@ -590,10 +596,16 @@ export class ProviderService {
           keyOrToken: key,
           createdAt: new Date().toISOString(),
           isActive: true,
-          accountDetails: username
+          accountDetails: username,
+          authScheme: scheme
         });
       }
-      return { ok: Boolean(data.ok), message: data.message || 'No response detail', account: username };
+      return {
+        ok: Boolean(data.ok),
+        message: data.message || 'No response detail',
+        account: username,
+        auth: scheme
+      };
     } catch (error) {
       return {
         ok: false,

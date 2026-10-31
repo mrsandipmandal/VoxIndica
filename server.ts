@@ -363,9 +363,25 @@ app.post('/api/tts', async (req, res) => {
 
 // ---------------------------------------------------------------------------
 // Kaggle API proxy — credentials arrive per request and are never persisted.
+//
+// Kaggle ships two credential generations:
+//   basic  -> username + legacy API key from kaggle.json (www.kaggle.com/api/v1)
+//   bearer -> single access token from "Generate New Token" (kaggle CLI >= 1.8,
+//             kagglehub, api.kaggle.com/v1)
+// The Studio tests basic first and falls back to bearer, then remembers which
+// scheme actually worked for that credential.
 // ---------------------------------------------------------------------------
-function kaggleAuthHeader(username: string, key: string): string {
-  return `Basic ${Buffer.from(`${username}:${key}`).toString('base64')}`;
+type KaggleAuthScheme = 'basic' | 'bearer';
+
+interface KaggleCredentials {
+  username: string;
+  key: string;
+  auth?: KaggleAuthScheme;
+}
+
+function kaggleAuthHeader(credentials: KaggleCredentials, scheme: KaggleAuthScheme): string {
+  if (scheme === 'bearer') return `Bearer ${credentials.key}`;
+  return `Basic ${Buffer.from(`${credentials.username}:${credentials.key}`).toString('base64')}`;
 }
 
 /** Minimal ZIP reader (stored + deflate). Kaggle output bundles are standard zips. */
@@ -432,43 +448,71 @@ function extractWorkerSession(entries: Map<string, Buffer>): { url?: string; tok
 
 async function kaggleRequest(
   pathname: string,
-  username: string,
-  key: string,
+  credentials: KaggleCredentials,
   init: RequestInit = {}
 ): Promise<Response> {
-  return fetch(`${KAGGLE_API}${pathname}`, {
-    ...init,
-    headers: {
-      Authorization: kaggleAuthHeader(username, key),
-      ...(init.headers || {}),
-    },
-    signal: AbortSignal.timeout(60000),
-  });
+  const preferred: KaggleAuthScheme = credentials.auth === 'bearer' ? 'bearer' : 'basic';
+  const send = (scheme: KaggleAuthScheme) =>
+    fetch(`${KAGGLE_API}${pathname}`, {
+      ...init,
+      headers: {
+        Authorization: kaggleAuthHeader(credentials, scheme),
+        ...(init.headers || {}),
+      },
+      signal: AbortSignal.timeout(60000),
+    });
+
+  const response = await send(preferred);
+  // /kernels/* only speaks HTTP Basic today, so a Bearer token that passed the
+  // test endpoint can still 401 here. Retry once with the other scheme instead
+  // of failing a launch the user already verified.
+  if (response.status === 401 || response.status === 403) {
+    const fallback: KaggleAuthScheme = preferred === 'basic' ? 'bearer' : 'basic';
+    const retried = await send(fallback);
+    if (retried.ok) return retried;
+  }
+  return response;
 }
 
 app.post('/api/providers/kaggle/test', async (req, res) => {
   const username = String(req.body?.username || '').trim();
   const key = String(req.body?.key || '').trim();
   if (!username || !key) {
-    return res.json({ ok: false, message: 'Username and API key are both required' });
+    return res.json({ ok: false, message: 'Username and credential are both required' });
   }
+
+  const credentials: KaggleCredentials = { username, key };
+  const attempts: KaggleAuthScheme[] = ['basic', 'bearer'];
 
   try {
     // `/kernels/list?mine=true` was removed from the API (HTTP 400 "Invalid field 'mine'").
     // `user=` on kernels requires real auth, so it validates the credentials truthfully.
-    const response = await kaggleRequest(
-      `/kernels/list?user=${encodeURIComponent(username)}&pageSize=1`,
-      username,
-      key
-    );
-    if (response.ok) {
-      return res.json({ ok: true, message: `Kaggle API reachable as ${username}`, username });
+    let lastStatus = 0;
+    let lastBody = '';
+    for (const scheme of attempts) {
+      const response = await kaggleRequest(
+        `/kernels/list?user=${encodeURIComponent(username)}&pageSize=1`,
+        { ...credentials, auth: scheme }
+      );
+      if (response.ok) {
+        return res.json({
+          ok: true,
+          auth: scheme,
+          username,
+          message:
+            scheme === 'bearer'
+              ? `Kaggle API reachable as ${username} (access token, Bearer)`
+              : `Kaggle API reachable as ${username} (legacy key, HTTP Basic)`,
+        });
+      }
+      lastStatus = response.status;
+      lastBody = (await response.text()).slice(0, 160);
     }
-    const body = await response.text();
+
     const message =
-      response.status === 401 || response.status === 403
-        ? 'Kaggle rejected these credentials (check username + API key)'
-        : `Kaggle responded HTTP ${response.status}: ${body.slice(0, 160)}`;
+      lastStatus === 401 || lastStatus === 403
+        ? 'Kaggle rejected both auth schemes. Create a legacy API key (kaggle.com/settings/api → Create Legacy API Key) and use username + key: the REST automation speaks www.kaggle.com/api/v1, which expects HTTP Basic. New access tokens only work with the kaggle CLI 1.8+ / kagglehub clients.'
+        : `Kaggle responded HTTP ${lastStatus}: ${lastBody.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim()}`;
     return res.json({ ok: false, message });
   } catch (error: any) {
     return res.json({ ok: false, message: `Could not reach Kaggle: ${error?.message || 'network error'}` });
@@ -479,6 +523,10 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
   const username = String(req.body?.username || '').trim();
   const key = String(req.body?.key || '').trim();
   const datasetSource = String(req.body?.datasetSource || '').trim();
+  // Reuse the scheme the Test button verified; kaggleRequest() retries the other
+  // scheme once if /kernels/push still answers 401/403.
+  const auth: KaggleAuthScheme = req.body?.auth === 'bearer' ? 'bearer' : 'basic';
+  const credentials: KaggleCredentials = { username, key, auth };
 
   if (!username || !key) {
     return res.json({ ok: false, message: 'Save and verify Kaggle credentials first' });
@@ -518,7 +566,7 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
   form.append('fileData', notebook);
 
   try {
-    const response = await kaggleRequest('/kernels/push', username, key, { method: 'POST', body: form });
+    const response = await kaggleRequest('/kernels/push', credentials, { method: 'POST', body: form });
     const body = await response.text();
     const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
 
@@ -550,12 +598,17 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
   if (!username || !key) {
     return res.json({ state: 'error', message: 'Kaggle credentials missing' });
   }
+  const credentials: KaggleCredentials = {
+    username,
+    key,
+    auth: req.body?.auth === 'bearer' ? 'bearer' : 'basic',
+  };
 
   const kernelUrl = `https://www.kaggle.com/code/${username}/${KAGGLE_KERNEL_SLUG}`;
   const kernelPath = `${username}/${KAGGLE_KERNEL_SLUG}`;
 
   try {
-    const statusResponse = await kaggleRequest(`/kernels/status/${kernelPath}`, username, key);
+    const statusResponse = await kaggleRequest(`/kernels/status/${kernelPath}`, credentials);
     const statusText = (await statusResponse.text()).trim();
 
     if (!statusResponse.ok) {
@@ -579,7 +632,7 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
       });
     }
 
-    const outputResponse = await kaggleRequest(`/kernels/output/${kernelPath}`, username, key);
+    const outputResponse = await kaggleRequest(`/kernels/output/${kernelPath}`, credentials);
     if (outputResponse.ok) {
       const archive = Buffer.from(await outputResponse.arrayBuffer());
       const session = extractWorkerSession(readZipEntries(archive));

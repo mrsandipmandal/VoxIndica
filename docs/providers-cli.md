@@ -11,7 +11,7 @@ Docs: <https://github.com/Kaggle/kaggle-api> · API keys: <https://www.kaggle.co
 # 1. Install
 python -m pip install --upgrade kaggle
 
-# 2. Put your token in place (download "kaggle.json" from kaggle.com/settings -> Create New Token)
+# 2. Put your token in place (kaggle.com/settings/api -> Create Legacy API Key downloads kaggle.json)
 mkdir -p ~/.kaggle
 mv ~/Downloads/kaggle.json ~/.kaggle/kaggle.json
 chmod 600 ~/.kaggle/kaggle.json
@@ -19,6 +19,9 @@ chmod 600 ~/.kaggle/kaggle.json
 # or use environment variables instead of the file
 export KAGGLE_USERNAME="your-username"
 export KAGGLE_KEY="your-api-key"
+
+# new-style access tokens (Generate New Token) go here instead, not in kaggle.json
+# export KAGGLE_API_TOKEN="..."
 
 # 3. Check it works
 kaggle datasets list -s speech

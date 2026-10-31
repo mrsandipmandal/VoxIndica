@@ -150,11 +150,24 @@ cloning use either a dedicated **Inference Endpoint** (billed per hour) or the K
 
 Base URL: `https://www.kaggle.com/api/v1` · Auth: HTTP Basic `username:api-key` (`kaggle.json`).
 
-Create the key at <https://www.kaggle.com/settings> → **Create New Token**.
+Create the key at <https://www.kaggle.com/settings/api>.
+
+### Which credential should you create?
+
+Kaggle's settings page now offers two generations, and they are not interchangeable:
+
+| Page button | Result | Works with |
+|---|---|---|
+| **Create Legacy API Key** | downloads `kaggle.json` with `username` + `key` | `www.kaggle.com/api/v1` over **HTTP Basic** — this is what the Studio's push/status/output automation uses |
+| **Generate New Token** | one long access token string | `kaggle` CLI ≥ 1.8, `kagglehub`, and `api.kaggle.com/v1` over **Bearer** |
+
+So for the in-app **Launch on Kaggle** button, use the legacy pair. The Studio's Test button tries Basic first and
+then Bearer, and stores whichever scheme Kaggle accepted, so a new access token still works if Kaggle's REST
+endpoints honour it. If both are rejected, the message says exactly that instead of blaming your password.
 
 ```bash
 curl -s -u "$KAGGLE_USERNAME:$KAGGLE_KEY" \
-  "https://www.kaggle.com/api/v1/kernels/list?mine=true&pageSize=5"
+  "https://www.kaggle.com/api/v1/kernels/list?user=$KAGGLE_USERNAME&pageSize=5"
 ```
 
 ### Push a notebook (start the worker)
