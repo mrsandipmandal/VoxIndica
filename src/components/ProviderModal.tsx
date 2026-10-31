@@ -340,6 +340,9 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
 
   const handleLaunchKaggle = async () => {
     stopPolling();
+    // A stale "this URL is dead" error from a previous session would otherwise
+    // sit under the launch controls while the new kernel is starting.
+    setFeedback(null);
     setLaunch({ phase: 'pushing', message: 'Pushing the worker notebook to Kaggle…' });
     launchedAt.current = Date.now();
 
@@ -389,6 +392,12 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
   const renderSessionInputs = () => (
     <div className="space-y-3 p-4 bg-slate-900 border border-slate-800 rounded-lg">
       <SectionLabel>Session endpoint</SectionLabel>
+      <p className="text-[11px] text-slate-500 leading-relaxed -mt-1">
+        These two boxes hold the address of a worker that is running <em>right now</em>. Every run prints a new
+        one. <span className="text-slate-300">Launch on Kaggle</span> fills them automatically; if it cannot, copy
+        the <span className="font-mono">TUNNEL URL</span> and <span className="font-mono">BEARER TOKEN</span> lines
+        from the notebook output. A URL from an earlier session will always fail.
+      </p>
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
         <div className="sm:col-span-2">
           <label className="block text-[11px] font-medium text-slate-400 mb-1">Tunnel URL</label>

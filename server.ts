@@ -647,9 +647,11 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
       return res.json({
         ok: false,
         message:
-          response.status === 403
-            ? 'Kaggle refused the push (403). Verify your account can run GPU kernels and that the phone/identity verification is complete.'
-            : `Kaggle push failed (HTTP ${response.status}): ${cleanBody}`,
+          response.status === 401
+            ? 'Kaggle rejected the saved credential for /kernels/push (401). Verify & save a Legacy API Key from kaggle.com/settings/api (username + key from kaggle.json) — new-style access tokens do not always authorise notebook pushes.'
+            : response.status === 403
+              ? 'Kaggle refused the push (403). Verify your account can run GPU kernels and that the phone/identity verification is complete.'
+              : `Kaggle push failed (HTTP ${response.status}): ${cleanBody}`,
         kernelUrl,
       });
     }
