@@ -173,8 +173,9 @@ request to the proxy. Worker tokens are generated with `secrets.token_hex(16)` a
   URL from the live log. Push, queue state and GPU allocation are still automated.
 - Kaggle GPU sessions and Colab runtimes are time-limited (~12 h and idle-based). The Studio reports the
   worker as offline afterwards instead of inventing a countdown.
-- Reference audio must be RIFF/WAVE (3–30 s recommended, ≤ 25 MB); Safari records MP4/AAC, which the UI
-  rejects with an explicit message.
+- Reference audio must be RIFF/WAVE (3–30 s recommended, ≤ 25 MB); the Studio now decodes any
+  browser-playable container (including Safari's MP4/AAC) to mono 16-bit WAV and trims clips to the
+  first 30 s before storing them, so an oversized or non-WAV upload can no longer reach the worker.
 - `speed` / `pitch` are accepted by the worker API for compatibility but not applied; the response reports
   `applied_post_processing: []`.
 

@@ -495,6 +495,16 @@ export default function App() {
                   </div>
                 )}
 
+                {currentVoice.isCloned && !currentVoice.referenceAudioBase64 && (
+                  <p className="flex items-start gap-1.5 text-[11px] text-rose-300">
+                    <AlertCircle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                    <span>
+                      The reference sample for this cloned voice is missing, so synthesis cannot reproduce it.
+                      Open Voice Cloning, record or upload a 3–30s clip and save this profile again.
+                    </span>
+                  </p>
+                )}
+
                 <textarea
                   value={inputText}
                   onChange={(e) => setInputText(e.target.value)}

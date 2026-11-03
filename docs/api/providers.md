@@ -36,7 +36,7 @@ curl -s https://YOUR-TUNNEL.trycloudflare.com/health
 {
   "status": "online",
   "service": "voxindica-worker",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "platform": "kaggle",
   "model": "openbmb/VoxCPM2",
   "model_loaded": true,
@@ -70,7 +70,7 @@ curl -s -X POST https://YOUR-TUNNEL.trycloudflare.com/clone_voice \
 | Field | Type | Notes |
 |---|---|---|
 | `text` | string | required, 1..N chars |
-| `reference_audio` | string | base64 or data-URL, RIFF/WAVE, 3–30 s recommended, ≤ 25 MB |
+| `reference_audio` | string | base64 or data-URL, RIFF/WAVE, 3–30 s recommended, ≤ 25 MB; the Studio trims to 30 s, the worker uses at most the first 60 s |
 | `prompt_text` | string | optional transcript hint |
 | `language` | string | `bn-IN`, `hi-IN`, `en-IN` |
 | `cfg_value` | float | default `2.0` |

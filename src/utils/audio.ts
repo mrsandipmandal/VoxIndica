@@ -251,6 +251,67 @@ export function blobToBase64(blob: Blob): Promise<string> {
   });
 }
 
+/** Longest reference clip the clone worker will accept for synthesis. */
+export const REFERENCE_MAX_SECONDS = 30;
+/** Shortest reference clip that produces a stable speaker embedding. */
+export const REFERENCE_MIN_SECONDS = 3;
+
+/**
+ * Decode a base64 payload (with or without a `data:` prefix) into a Blob.
+ */
+export function dataUrlToBlob(dataUrl: string): Blob {
+  const comma = dataUrl.indexOf(',');
+  const header = comma >= 0 ? dataUrl.slice(0, comma) : '';
+  const payload = comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl;
+  const mime = /data:([^;]+)/.exec(header)?.[1] || 'audio/wav';
+  const binary = atob(payload);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return new Blob([bytes], { type: mime });
+}
+
+/**
+ * Normalize a reference clip for the worker:
+ *
+ * - decodes anything the browser can play (WAV, MP3, M4A/AAC, WebM/Opus),
+ *   because `MediaRecorder` never produces RIFF/WAVE,
+ * - downmixes to mono and re-encodes as 16-bit PCM WAV,
+ * - trims to `maxSeconds` (first N seconds) so a long upload cannot be
+ *   rejected by the worker's reference-duration guard.
+ */
+export async function prepareReferenceWav(
+  blob: Blob,
+  maxSeconds: number = REFERENCE_MAX_SECONDS
+): Promise<{ blob: Blob; durationSeconds: number; sourceDurationSeconds: number; trimmed: boolean }> {
+  const arrayBuffer = await blob.arrayBuffer();
+  const AudioContextClass =
+    window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext;
+  const ctx = new AudioContextClass();
+  try {
+    const buffer = await ctx.decodeAudioData(arrayBuffer.slice(0));
+    const sourceDurationSeconds = buffer.duration;
+    const limit = Math.max(1, Math.min(buffer.length, Math.floor(maxSeconds * buffer.sampleRate)));
+    const mono = new Float32Array(limit);
+    const gain = 1 / buffer.numberOfChannels;
+    for (let channel = 0; channel < buffer.numberOfChannels; channel += 1) {
+      const samples = buffer.getChannelData(channel);
+      for (let i = 0; i < limit; i += 1) {
+        mono[i] += samples[i] * gain;
+      }
+    }
+    return {
+      blob: encodeWAV(mono, buffer.sampleRate),
+      durationSeconds: limit / buffer.sampleRate,
+      sourceDurationSeconds,
+      trimmed: buffer.length > limit,
+    };
+  } finally {
+    void ctx.close();
+  }
+}
+
 /**
  * Analyzes voice characteristics from an audio blob using Web Audio API:
  * Calculates real fundamental frequency (F0 pitch in Hz), spectral timbre, and pacing.

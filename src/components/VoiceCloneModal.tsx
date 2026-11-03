@@ -1,6 +1,6 @@
 import React, { useState, useRef } from 'react';
 import { X, Mic, MicOff, Upload, CheckCircle2, AlertTriangle, ShieldCheck, Play, Pause, FileAudio, Activity, Cpu } from 'lucide-react';
-import { VoiceRecorder, analyzeAudioCharacteristics, blobToBase64 } from '../utils/audio';
+import { VoiceRecorder, analyzeAudioCharacteristics, blobToBase64, prepareReferenceWav, REFERENCE_MAX_SECONDS, REFERENCE_MIN_SECONDS } from '../utils/audio';
 import { VoicePreset, SupportedLanguage } from '../types';
 
 interface VoiceCloneModalProps {
@@ -33,6 +33,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
   const [tempoDescription, setTempoDescription] = useState<string | undefined>(undefined);
   const [audioBase64, setAudioBase64] = useState<string | undefined>(undefined);
   const [promptText, setPromptText] = useState('');
+  const [referenceNote, setReferenceNote] = useState<string | null>(null);
 
   const recorderRef = useRef<VoiceRecorder | null>(null);
   const audioPreviewRef = useRef<HTMLAudioElement | null>(null);
@@ -40,14 +41,41 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
 
   if (!isOpen) return null;
 
-  const processCapturedAudio = async (blob: Blob, duration: number, targetGender: 'female' | 'male' = gender) => {
-    setAudioBlob(blob);
-    setAudioDuration(duration);
+  const processCapturedAudio = async (blob: Blob, targetGender: 'female' | 'male' = gender) => {
     setIsAnalyzing(true);
+    setErrorMsg(null);
+    setReferenceNote(null);
+    setAudioBase64(undefined);
     try {
+      // The worker only speaks RIFF/WAVE and caps the reference length, while
+      // MediaRecorder emits WebM/Opus and uploads can be minutes long. Normalize
+      // and trim here so the stored clip is always usable.
+      const prepared = await prepareReferenceWav(blob);
+      if (audioPreviewRef.current) {
+        audioPreviewRef.current.pause();
+        audioPreviewRef.current = null;
+        setPreviewPlaying(false);
+      }
+      setAudioBlob(prepared.blob);
+      setAudioDuration(prepared.durationSeconds);
+      if (prepared.trimmed) {
+        setReferenceNote(
+          `Trimmed the ${prepared.sourceDurationSeconds.toFixed(0)}s sample to the first ` +
+            `${prepared.durationSeconds.toFixed(0)}s — the clone worker accepts up to ${REFERENCE_MAX_SECONDS}s.`
+        );
+      }
+      if (prepared.durationSeconds < REFERENCE_MIN_SECONDS) {
+        setErrorMsg(
+          `Sample is too short (${prepared.durationSeconds.toFixed(1)}s). Minimum ${REFERENCE_MIN_SECONDS}s is required for a stable acoustic embedding.`
+        );
+        setPitchCategory(undefined);
+        setTimbreDescription(undefined);
+        setTempoDescription(undefined);
+        return;
+      }
       const [base64, analysis] = await Promise.all([
-        blobToBase64(blob),
-        analyzeAudioCharacteristics(blob, targetGender)
+        blobToBase64(prepared.blob),
+        analyzeAudioCharacteristics(prepared.blob, targetGender)
       ]);
       setAudioBase64(base64);
       setMeasuredPitchHz(analysis.pitchHz);
@@ -55,7 +83,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       setTimbreDescription(analysis.timbreDescription);
       setTempoDescription(analysis.tempoDescription);
     } catch {
-      // fallback
+      setAudioBlob(null);
+      setAudioDuration(0);
+      setErrorMsg('Could not decode that audio file. Please use a valid WAV, MP3, M4A or WebM recording.');
     } finally {
       setIsAnalyzing(false);
     }
@@ -81,10 +111,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       const result = await recorderRef.current.stop();
       setIsRecording(false);
       setRecordingLevel(0);
-      if (result.durationSeconds < 3.0) {
-        setErrorMsg('Sample is too short (min 3.0 seconds required for stable acoustic embedding).');
-      }
-      await processCapturedAudio(result.blob, result.durationSeconds);
+      await processCapturedAudio(result.blob);
     } catch {
       setIsRecording(false);
       setErrorMsg('Error capturing microphone audio.');
@@ -95,7 +122,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
-    if (!file.type.startsWith('audio/')) {
+    const looksLikeAudio =
+      file.type.startsWith('audio/') || /\.(wav|mp3|m4a|aac|ogg|webm|flac)$/i.test(file.name);
+    if (!looksLikeAudio) {
       setErrorMsg('Please select a valid audio file (.wav, .mp3, .m4a, .webm).');
       return;
     }
@@ -105,26 +134,14 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       return;
     }
 
-    setErrorMsg(null);
-    const audioUrl = URL.createObjectURL(file);
-    const tempAudio = new Audio(audioUrl);
-    tempAudio.onloadedmetadata = () => {
-      const duration = tempAudio.duration;
-      if (duration < 3.0) {
-        setErrorMsg('Sample is too short (minimum 3 seconds required).');
-      } else if (duration > 300.0) {
-        setErrorMsg('Audio exceeds maximum recommended length of 5 minutes (300 seconds).');
-      } else {
-        setErrorMsg(null);
-      }
-      processCapturedAudio(file, duration);
-    };
+    void processCapturedAudio(file);
+    e.target.value = '';
   };
 
   const handleGenderChange = (newGender: 'female' | 'male') => {
     setGender(newGender);
     if (audioBlob) {
-      processCapturedAudio(audioBlob, audioDuration, newGender);
+      void processCapturedAudio(audioBlob, newGender);
     }
   };
 
@@ -155,8 +172,12 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
       setErrorMsg('Reference audio sample is required.');
       return;
     }
-    if (audioDuration < 3.0) {
-      setErrorMsg('Audio duration must be at least 3.0 seconds.');
+    if (!audioBase64) {
+      setErrorMsg('The reference sample is still being processed. Wait for the analysis to finish, then save.');
+      return;
+    }
+    if (audioDuration < REFERENCE_MIN_SECONDS) {
+      setErrorMsg(`Audio duration must be at least ${REFERENCE_MIN_SECONDS} seconds.`);
       return;
     }
     if (!consentConfirmed) {
@@ -202,7 +223,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
               Few-Shot Voice Cloning Studio
             </h3>
             <p className="text-xs text-slate-400 mt-0.5">
-              Clone voice characteristics from a 5–15 second clean speech sample.
+              Clone voice characteristics from a 3–30 second clean speech sample.
             </p>
           </div>
           <button
@@ -285,7 +306,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
           {/* Audio Input Options: Record or Upload */}
           <div>
             <label className="block text-xs font-medium text-slate-300 mb-1.5">
-              Reference Audio Sample (5 to 15 seconds)
+              Reference Audio Sample (3 to 30 seconds)
             </label>
             
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -329,7 +350,7 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
                 />
                 <Upload className="w-6 h-6 text-slate-400 mb-2" />
                 <span className="text-xs font-medium text-slate-200">Upload Clean Audio File</span>
-                <span className="text-[11px] text-slate-500 mt-0.5">WAV, MP3 or WebM (Max 25MB)</span>
+                <span className="text-[11px] text-slate-500 mt-0.5">WAV, MP3, M4A or WebM · up to 30s used (Max 25MB)</span>
               </div>
             </div>
 
@@ -353,6 +374,10 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
                     {previewPlaying ? 'Pause' : 'Listen'}
                   </button>
                 </div>
+
+                {referenceNote && (
+                  <p className="text-[11px] text-amber-400/90 leading-snug px-1">{referenceNote}</p>
+                )}
 
                 {isAnalyzing ? (
                   <div className="p-3 bg-slate-900/90 border border-amber-500/30 rounded-lg flex items-center gap-2.5 text-xs text-amber-300">
@@ -432,9 +457,9 @@ export const VoiceCloneModal: React.FC<VoiceCloneModalProps> = ({
           </button>
           <button
             onClick={handleSaveVoice}
-            disabled={!consentConfirmed || !audioBlob || audioDuration < 3.0}
+            disabled={!consentConfirmed || !audioBlob || !audioBase64 || isAnalyzing || audioDuration < REFERENCE_MIN_SECONDS}
             className={`px-4 py-2 rounded-lg text-xs font-semibold flex items-center gap-1.5 transition-all ${
-              consentConfirmed && audioBlob && audioDuration >= 3.0
+              consentConfirmed && audioBlob && audioBase64 && !isAnalyzing && audioDuration >= REFERENCE_MIN_SECONDS
                 ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 cursor-pointer shadow-lg shadow-amber-500/20'
                 : 'bg-slate-800 text-slate-500 cursor-not-allowed border border-slate-700/50'
             }`}

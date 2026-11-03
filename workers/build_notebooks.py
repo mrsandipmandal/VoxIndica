@@ -245,9 +245,18 @@ session = serve(
 )
 
 print()
-print("COPY THESE INTO VOXINDICA STUDIO -> INFERENCE PROVIDER")
-print("TUNNEL URL   :", session["url"])
-print("BEARER TOKEN :", session["token"])
+if session["url"]:
+    print("COPY THESE INTO VOXINDICA STUDIO -> INFERENCE PROVIDER")
+    print("TUNNEL URL   :", session["url"])
+    print("BEARER TOKEN :", session["token"])
+else:
+    # A hosted worker without a tunnel is unreachable, so fail the cell loudly
+    # instead of printing a 127.0.0.1 URL that the Studio can never call.
+    raise RuntimeError(
+        "No tunnel URL — the Studio cannot reach this worker."
+        f" (tunnel error: {session['tunnel_error'] or 'cloudflared did not start'})."
+        " Rerun this cell with Internet enabled (Kaggle: Settings -> Internet)."
+    )
 '''
 
 STATUS_CELL = '''

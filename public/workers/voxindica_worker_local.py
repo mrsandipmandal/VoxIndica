@@ -35,13 +35,14 @@ import secrets
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-WORKER_VERSION = "1.0.0"
+WORKER_VERSION = "1.0.4"
 DEFAULT_MODEL_ID = "openbmb/VoxCPM2"
 DEFAULT_SAMPLE_RATE = 24000
 DEFAULT_CFG_VALUE = 2.0
@@ -276,36 +277,115 @@ def decode_reference_audio(payload: str, destination: Path) -> str:
     if duration < MIN_REFERENCE_SECONDS:
         raise ValueError(f"reference audio is {duration:.2f}s, minimum is {MIN_REFERENCE_SECONDS:.0f}s")
     if duration > MAX_REFERENCE_SECONDS:
-        raise ValueError(f"reference audio is {duration:.2f}s, maximum is {MAX_REFERENCE_SECONDS:.0f}s")
+        log(
+            f"[voxindica] reference audio is {duration:.2f}s; "
+            f"using the first {MAX_REFERENCE_SECONDS:.0f}s"
+        )
+        data = data[: int(MAX_REFERENCE_SECONDS * rate)]
+        duration = len(data) / float(rate)
 
     destination.parent.mkdir(parents=True, exist_ok=True)
     sf.write(str(destination), data, int(rate), subtype="PCM_16")
     return str(destination)
 
 
+CLOUDFLARED_ENV = "CLOUDFLARED_BIN"
+CLOUDFLARED_MIN_BYTES = 1_000_000
+
+
+def _writable_workdir() -> Path:
+    """Return a writable directory for downloaded binaries.
+
+    Notebook kernels sometimes run cells from a directory that is not the one
+    that was current when the download happened, so binaries are cached in a
+    stable, writable location instead of a bare relative name.
+    """
+    candidates = [Path.cwd()]
+    for fixed in ("/kaggle/working", "/content"):
+        if Path(fixed).is_dir():
+            candidates.append(Path(fixed))
+    candidates.append(Path(tempfile.gettempdir()))
+
+    for candidate in candidates:
+        try:
+            candidate.mkdir(parents=True, exist_ok=True)
+            probe = candidate / f".voxindica-write-{os.getpid()}"
+            probe.write_text("ok", encoding="utf-8")
+            probe.unlink()
+            return candidate
+        except OSError:
+            continue
+    return Path(tempfile.gettempdir())
+
+
 def _cloudflared_binary() -> Path:
-    """Locate or download cloudflared for the current OS/arch."""
-    local = Path("cloudflared-linux-amd64")
-    if local.exists():
-        return local
-    if shutil.which("cloudflared"):
-        return Path(shutil.which("cloudflared") or "cloudflared")
+    """Locate or download cloudflared and return an absolute path.
+
+    ``subprocess.Popen`` resolves commands *without a slash* through ``PATH``,
+    never through the current directory. Returning ``Path("cloudflared-linux-amd64")``
+    therefore made Kaggle fail with ``FileNotFoundError: [Errno 2] No such file
+    or directory: 'cloudflared-linux-amd64'`` even though the download succeeded.
+    """
+    override = os.environ.get(CLOUDFLARED_ENV, "").strip()
+    if override:
+        path = Path(override).expanduser()
+        if not path.is_file():
+            raise RuntimeError(f"{CLOUDFLARED_ENV} points at a missing file: {path}")
+        path.chmod(0o755)
+        return path.resolve()
 
     system = _platform.system().lower()
     machine = _platform.machine().lower()
     if system == "linux":
         asset = "cloudflared-linux-arm64" if machine in ("aarch64", "arm64") else "cloudflared-linux-amd64"
     elif system == "darwin":
-        asset = "cloudflared-darwin-arm64.tgz" if machine in ("arm64",) else "cloudflared-darwin-amd64.tgz"
+        asset = "cloudflared-darwin-arm64.tgz" if machine in ("arm64", "aarch64") else "cloudflared-darwin-amd64.tgz"
     else:
         asset = "cloudflared-windows-amd64.exe"
+
+    workdir = _writable_workdir()
+    filename = "cloudflared" if asset.endswith(".tgz") else asset
+    target = (workdir / filename).resolve()
+
+    if target.is_file() and target.stat().st_size >= CLOUDFLARED_MIN_BYTES:
+        target.chmod(0o755)
+        return target
+
+    system_binary = shutil.which("cloudflared")
+    if system_binary:
+        return Path(system_binary).resolve()
 
     import urllib.request
 
     url = f"https://github.com/cloudflare/cloudflared/releases/latest/download/{asset}"
-    log(f"[voxindica] downloading cloudflared ({asset})...")
-    target = local if system == "linux" else Path(asset)
-    urllib.request.urlretrieve(url, target)  # noqa: S310 - fixed GitHub release URL
+    log(f"[voxindica] downloading cloudflared ({asset}) -> {target}")
+    try:
+        urllib.request.urlretrieve(url, target)  # noqa: S310 - fixed GitHub release URL
+    except Exception as exc:  # noqa: BLE001 - surfaced through the tunnel error
+        raise RuntimeError(f"download failed for {url}: {type(exc).__name__}: {exc}") from exc
+
+    if asset.endswith(".tgz"):
+        import tarfile
+
+        try:
+            with tarfile.open(target, "r:gz") as archive:
+                archive.extractall(workdir)
+        finally:
+            target.unlink(missing_ok=True)
+        target = (workdir / "cloudflared").resolve()
+
+    if not target.is_file() or target.stat().st_size < CLOUDFLARED_MIN_BYTES:
+        raise RuntimeError(f"{target} is missing or truncated after download")
+
+    if system == "linux":
+        with target.open("rb") as handle:
+            magic = handle.read(4)
+        if magic != b"\x7fELF":
+            target.unlink(missing_ok=True)
+            raise RuntimeError(
+                f"{target} is not a Linux executable (got {magic!r}); GitHub returned an error page"
+            )
+
     target.chmod(0o755)
     return target
 
@@ -317,31 +397,49 @@ def start_tunnel(port: int, wait_seconds: int = 90) -> Tuple[Optional[str], Opti
     except Exception as exc:
         return None, None, f"cloudflared unavailable: {exc}"
 
-    process = subprocess.Popen(  # noqa: S603 - explicit binary path
-        [str(binary), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        bufsize=1,
-    )
+    command = [str(binary), "tunnel", "--no-autoupdate", "--url", f"http://127.0.0.1:{port}"]
+    log(f"[voxindica] starting tunnel with {binary}")
+    try:
+        process = subprocess.Popen(  # noqa: S603 - explicit absolute binary path
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+    except OSError as exc:
+        # Popen only searches PATH for names without a slash, and we resolved the
+        # path above. Surface the real reason instead of killing the kernel cell.
+        return None, None, f"could not launch {binary}: {type(exc).__name__}: {exc}"
 
     found: Dict[str, Optional[str]] = {"url": None}
+    tail: List[str] = []
     ready = threading.Event()
 
     def _pump() -> None:
         assert process.stdout is not None
         for line in iter(process.stdout.readline, ""):
+            cleaned = line.strip()
+            if cleaned:
+                tail.append(cleaned)
+                del tail[:-5]
             match = re.search(r"https://[a-z0-9-]+\.trycloudflare\.com", line)
             if match and found["url"] is None:
                 found["url"] = match.group(0)
                 ready.set()
             elif "ERR" in line or "error" in line.lower():
-                log(f"[cloudflared] {line.strip()}")
+                log(f"[cloudflared] {cleaned}")
 
     threading.Thread(target=_pump, daemon=True).start()
     ready.wait(wait_seconds)
     if not found["url"]:
-        return None, process, "cloudflared did not report a trycloudflare.com URL in time"
+        reason = "cloudflared did not report a trycloudflare.com URL in time"
+        exit_code = process.poll()
+        if exit_code is not None:
+            reason = f"cloudflared exited with code {exit_code} before the tunnel was ready"
+        if tail:
+            reason = f"{reason}: {tail[-1]}"
+        return None, process, reason
     return found["url"], process, ""
 
 
@@ -507,6 +605,22 @@ def build_app(
     return app
 
 
+def _keep_announcing_tunnel(url: str, interval: float = 60.0) -> None:
+    """Re-print the tunnel URL on a timer.
+
+    A kernel that never finishes only exposes its log through the live session
+    stream, and readers can attach late, so a single print at startup is easy to
+    miss. Repeating the line keeps the URL discoverable for the whole session.
+    """
+
+    def _loop() -> None:
+        while True:
+            time.sleep(interval)
+            log(f"  TUNNEL URL    : {url}")
+
+    threading.Thread(target=_loop, daemon=True).start()
+
+
 def serve(
     platform_name: Optional[str] = None,
     port: int = DEFAULT_PORT,
@@ -524,6 +638,19 @@ def serve(
     platform_name = platform_name or detect_platform()
     token = token or os.environ.get("VOXINDICA_WORKER_TOKEN") or secrets.token_hex(16)
     model_error: Optional[str] = None
+
+    # On a hosted GPU runtime the Studio can only reach the worker through the
+    # tunnel, so `tunnel=False` there would produce a session that can never be
+    # used. Treat it as required instead of silently starting nothing.
+    hosted = platform_name in ("kaggle", "colab")
+    if hosted and not tunnel:
+        log("[voxindica] hosted GPU runtime: the tunnel is mandatory, starting it anyway")
+        tunnel = True
+
+    log(
+        f"[voxindica] core {WORKER_VERSION} · platform={platform_name} · "
+        f"port={port} · tunnel={'on' if tunnel else 'off'}"
+    )
 
     if model is None:
         try:
@@ -557,6 +684,8 @@ def serve(
     tunnel_error = ""
     if tunnel:
         public_url, tunnel_process, tunnel_error = start_tunnel(port, wait_seconds=wait_seconds)
+        if public_url:
+            _keep_announcing_tunnel(public_url)
 
     session_path = write_session(
         platform_name,
@@ -568,6 +697,7 @@ def serve(
             "model_error": model_error,
             "local_url": f"http://{host}:{port}",
             "tunnel_error": tunnel_error,
+            "reachable": bool(public_url) or not hosted,
         },
     )
 
@@ -576,12 +706,17 @@ def serve(
     log("  VOXINDICA WORKER READY")
     log("=" * 64)
     log(f"  Platform      : {platform_name}")
+    log(f"  Core version  : {WORKER_VERSION}")
     log(f"  Local URL     : http://{host}:{port}")
     log(f"  Model         : {model_id} ({'loaded' if model is not None else 'FAILED'})")
     if public_url:
         log(f"  TUNNEL URL    : {public_url}")
+    elif tunnel:
+        log(f"  TUNNEL URL    : FAILED ({tunnel_error or 'cloudflared did not report a URL'})")
+        log("  ERROR: no public URL — VoxIndica Studio cannot reach this worker.")
+        log("  Fix  : rerun this cell with Internet enabled, then copy the new URL.")
     else:
-        log(f"  TUNNEL URL    : unavailable ({tunnel_error or 'not requested'})")
+        log("  TUNNEL URL    : disabled (local-only worker, reachable at the Local URL)")
     log(f"  BEARER TOKEN  : {token}")
     log(f"  Session file  : {session_path.resolve()}")
     log("=" * 64)
@@ -597,8 +732,11 @@ def serve(
                 tunnel_process.terminate()
 
     return {
-        "url": public_url or f"http://{host}:{port}",
+        # Never report a loopback URL as the tunnel URL: the Studio would call
+        # 127.0.0.1 on its own machine and show a bogus "offline".
+        "url": public_url or (None if hosted else f"http://{host}:{port}"),
         "local_url": f"http://{host}:{port}",
+        "reachable": bool(public_url) or not hosted,
         "token": token,
         "platform": platform_name,
         "model_loaded": model is not None,
@@ -623,10 +761,6 @@ def health_probe(url: str, token: str = "", timeout: float = 5.0) -> Dict[str, A
         return {"status": "error", "http_status": exc.code, "detail": exc.read().decode("utf-8", "replace")}
     except Exception as exc:  # noqa: BLE001
         return {"status": "offline", "detail": f"{type(exc).__name__}: {exc}"}
-
-
-if __name__ == "__main__":
-    serve(tunnel=os.environ.get("VOXINDICA_TUNNEL", "0") == "1")
 
 
 if __name__ == "__main__":

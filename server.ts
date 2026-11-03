@@ -141,6 +141,12 @@ app.post('/api/tts', async (req, res) => {
       Boolean(workerUrl) && (WORKER_PLATFORMS.has(String(provider)) || Boolean(isCloned));
 
     if (usesWorker) {
+      if (isCloned && !referenceAudioBase64) {
+        return res.status(400).json({
+          error:
+            'This cloned voice has no saved reference sample. Re-upload a 3–30s clip in Voice Cloning and save the profile again.',
+        });
+      }
       const cleanWorkerUrl = String(workerUrl).replace(/\/+$/, '');
       try {
         const workerResp = await fetch(`${cleanWorkerUrl}/clone_voice`, {

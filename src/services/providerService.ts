@@ -6,7 +6,7 @@ import {
   KaggleAuthScheme,
   WorkerHealth
 } from '../types';
-import { synthesizeSpeechAudio } from '../utils/audio';
+import { synthesizeSpeechAudio, prepareReferenceWav, dataUrlToBlob, blobToBase64 } from '../utils/audio';
 
 const STORAGE_KEY_PROVIDERS = 'voxindica_providers_config';
 const STORAGE_KEY_API_KEYS = 'voxindica_api_keys_vault';
@@ -396,6 +396,28 @@ export class ProviderService {
     let durationSeconds = Math.max(2.5, job.text.trim().length / 14);
     let failureDetail: string | null = null;
 
+    // Older stored voices may predate the 3–30s limit or be WebM/MP3. Normalize
+    // the reference here as well so a saved profile keeps working after the
+    // worker tightened its duration guard.
+    let referenceAudioBase64 = job.voice.referenceAudioBase64 || '';
+    if (job.voice.isCloned && referenceAudioBase64) {
+      try {
+        const prepared = await prepareReferenceWav(dataUrlToBlob(referenceAudioBase64));
+        referenceAudioBase64 = await blobToBase64(prepared.blob);
+      } catch {
+        // Keep the original payload so the worker can report the real reason.
+      }
+    }
+
+    // A cloned profile without a saved sample can never be reproduced: fail with
+    // an actionable message instead of forwarding an empty reference to the
+    // worker (which would answer with a confusing 422).
+    if (job.voice.isCloned && !referenceAudioBase64) {
+      throw new Error(
+        'This cloned voice has no saved reference sample. Open Voice Cloning, re-record or upload a 3–30s clip, and save the profile again.'
+      );
+    }
+
     try {
       const response = await fetch('/api/tts', {
         method: 'POST',
@@ -410,7 +432,7 @@ export class ProviderService {
           modelId: job.modelId,
           voiceName: job.voice.name,
           isCloned: job.voice.isCloned || false,
-          referenceAudioBase64: job.voice.referenceAudioBase64 || '',
+          referenceAudioBase64,
           referenceAudioMimeType: job.voice.referenceAudioMimeType || 'audio/wav',
           promptText: job.voice.promptText || '',
           measuredPitchHz: job.voice.measuredPitchHz,
