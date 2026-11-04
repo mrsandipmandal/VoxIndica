@@ -11,3 +11,4 @@ __pycache__/
 .venv-worker/
 cloudflared*
 worker_session.json
+data/

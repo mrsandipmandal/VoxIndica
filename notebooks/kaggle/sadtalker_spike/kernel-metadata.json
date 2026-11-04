@@ -1,0 +1,19 @@
+{
+  "id": "__KAGGLE_USERNAME__/voxindica-sadtalker-spike",
+  "title": "VoxIndica SadTalker Spike",
+  "code_file": "voxindica_sadtalker_spike.ipynb",
+  "language": "python",
+  "kernel_type": "notebook",
+  "is_private": "true",
+  "enable_gpu": "true",
+  "enable_internet": "true",
+  "dataset_sources": [],
+  "competition_sources": [],
+  "kernel_sources": [],
+  "keywords": [
+    "avatar",
+    "sadtalker",
+    "talking-head",
+    "voxindica"
+  ]
+}

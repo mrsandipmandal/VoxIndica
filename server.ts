@@ -9,6 +9,8 @@ import zlib from 'node:zlib';
 import { exec } from 'child_process';
 import { promisify } from 'util';
 import { applyAcousticVoiceCloning } from './src/server/acousticClone';
+import { registerCreatorRoutes } from './src/server/creator/routes';
+import { recoverInterruptedRenderJobs, recoverInterruptedVoiceJobs } from './src/server/creator/storage';
 
 dotenv.config();
 
@@ -1136,6 +1138,22 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
 });
 
 async function startServer() {
+  registerCreatorRoutes(app);
+
+  const recoveredVoiceJobs = await recoverInterruptedVoiceJobs();
+  if (recoveredVoiceJobs > 0) {
+    console.log(
+      `[creator] marked ${recoveredVoiceJobs} interrupted voice job(s) after restart; finished scenes are kept.`
+    );
+  }
+
+  const recoveredRenderJobs = await recoverInterruptedRenderJobs();
+  if (recoveredRenderJobs > 0) {
+    console.log(
+      `[creator] marked ${recoveredRenderJobs} interrupted render job(s) after restart; finished scene clips are kept.`
+    );
+  }
+
   // Markdown guides are served in dev and in production so the in-app doc links work.
   app.use('/docs', express.static(path.resolve(process.cwd(), 'docs')));
 

@@ -28,6 +28,7 @@ import { StopSessionButton } from './components/StopSessionButton';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { HistoryDrawer } from './components/HistoryDrawer';
 import { ModelRegistryView } from './components/ModelRegistryView';
+import { CreatorStudio } from './components/creator/CreatorStudio';
 
 import {
   SupportedLanguage,
@@ -107,7 +108,7 @@ export default function App() {
   const providerService = ProviderService.getInstance();
 
   // Navigation State
-  const [activeTab, setActiveTab] = useState<'studio' | 'models' | 'benchmarks' | 'history'>('studio');
+  const [activeTab, setActiveTab] = useState<'studio' | 'creator' | 'models' | 'benchmarks' | 'history'>('studio');
 
   // Studio Workspace State
   const [selectedLanguage, setSelectedLanguage] = useState<SupportedLanguage>('bn-IN');
@@ -358,7 +359,9 @@ export default function App() {
 
       {/* Main Workspace Viewport */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {activeTab === 'models' ? (
+        {activeTab === 'creator' ? (
+          <CreatorStudio />
+        ) : activeTab === 'models' ? (
           <ModelRegistryView
             selectedModelId={selectedModelId}
             onSelectModel={(id) => {

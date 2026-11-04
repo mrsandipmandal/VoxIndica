@@ -24,7 +24,7 @@
 - `src/data/benchmarks.ts`: Documented acceptance rubric for all combinations with VoxCPM-2 (4.65 MOS).
 - `src/utils/audio.ts`: Autocorrelation pitch detector ($F_0$ in Hz), spectral timbre analysis, and Base64 conversion helpers.
 - `server.ts`: Express backend running on port 3000. Uses `gemini-3.8-flash-tts` for Voice Design / few-shot neural voice cloning with calibrated acoustic personas, and `gemini-3.8-flash-lite-tts` for standard TTS.
-- `src/components/VoiceCloneModal.tsx`: Real-time acoustic feature extraction ($F_0$ pitch in Hz, vocal timbre, 512-dim embedding status), Base64 encoding, 300s windowing, and legal consent gate.
+- `src/components/VoiceCloneModal.tsx`: Real-time acoustic feature extraction ($F_0$ pitch in Hz, vocal timbre, 512-dim embedding status), Base64 encoding, 3–30s reference normalization, and legal consent gate.
 - `src/App.tsx`: Custom cloned voice persistence in `localStorage` (`voxindica_custom_voices`), active cloned voice indicator, and parameter pass-through.
 - `src/services/providerService.ts`: Forwards `isCloned`, `referenceAudioBase64`, `measuredPitchHz`, `timbreDescription`, and `tempoDescription` to `/api/tts`.
 - `src/components/`:
@@ -40,6 +40,13 @@
 - [x] Master Project Planning & Architecture (Stage 1)
 - [x] Read-Only Repository Audit (Stage 2)
 - [x] Phase 1 Implementation (Stage 4)
+- [x] Creator Studio Phase 0 — project store, zod contracts, `/api/creator/*` routes, ZIP export
+- [x] Creator Studio Phase 1 — Gemini → Groq → OpenRouter fallback, validated script, Creator Studio UI
+- [x] Creator Studio Phase 4.3 — checkpointed per-scene voice stage with real progress, cancel and restart recovery
+- [x] Creator Studio Phase 4.4 — checkpointed FFmpeg scene renderer (uploaded visuals + narration → 1280×720 MP4)
+- [x] Creator Studio Phase 4.5 — SRT/ASS captions from real narration durations, burned-in caption render, publishing pack with computed chapters, approved-thumbnail upload
+- [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
+- [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
 - [ ] End-to-End Test Suite Verification (Stage 5)
 
 ## API-First Provider Layer (branch `feat/api-first-providers`)
@@ -80,3 +87,91 @@
 ### Verification status
 - Verified: `npx tsc --noEmit` (clean), `npm run build` (vite, 423 kB bundle), `curl` smoke test of `/docs`, `/notebooks/*.ipynb`, `/api/providers/kaggle/test`, and FastAPI TestClient runs of `/clone_voice` (200 with audio, 401 without token, 500 on model exception, 503 when the model is absent).
 - Not verified here: live Kaggle API calls (no account credentials in this environment) and real VoxCPM2 inference (no GPU, no `voxcpm` package installed; local Python is 3.14, torch wheels target 3.10–3.12).
+
+## Creator Studio (Phase 1, branch `feat/creator-studio`)
+
+### Domain and storage
+- `src/types/creator.ts`: `CreatorProject`, `ScriptDocument`, `CreatorScene`, `CreatorAsset`, `ConsentRecord`, `RenderJob`, language/tone/mode/status unions.
+- `src/server/creator/schema.ts`: zod contracts for project CRUD, script content, consent and asset uploads. LLM output must pass `scriptContentSchema` before it is persisted.
+- `src/server/creator/storage.ts`: projects live at `data/projects/<uuid>/project.json` with `assets/` beside them. Writes are atomic (temp file + rename), ids are UUID-validated, asset paths are resolved under the store, assets are capped at 30 MB and limited to PNG/JPEG/WebP/WAV/MP3/M4A/OGG/WebM/MP4.
+- `data/` is gitignored. User media never enters git.
+
+### Script engine
+- `src/server/creator/providers.ts`: Gemini → Groq → OpenRouter with env model ids (`GEMINI_SCRIPT_MODEL`, `GROQ_SCRIPT_MODEL`, `OPENROUTER_SCRIPT_MODEL`).
+- Fallback happens only on 429, 5xx, timeout, network error or schema-invalid JSON. Auth and model-selection errors stop immediately with the provider's real message.
+- There is no fabricated script fallback: when every configured provider fails, the API returns the aggregated error.
+- `POST /api/creator/scripts/generate` returns the validated document plus an attempt trail and, when `projectId` is supplied, stores it and moves the project to `script_ready`.
+
+### Routes
+- `GET/POST /api/creator/projects`
+- `GET/PATCH/DELETE /api/creator/projects/:id`
+- `POST /api/creator/scripts/generate`
+- `POST /api/creator/projects/:id/assets`
+- `GET /api/creator/projects/:id/assets/:assetId`
+- `POST /api/creator/projects/:id/consent`
+- `GET /api/creator/projects/:id/voice`, `POST …/voice`, `POST …/voice/cancel`
+- `GET /api/creator/projects/:id/render`, `POST …/render`, `POST …/render/cancel`
+- `GET /api/creator/projects/:id/captions` (SRT), `GET /api/creator/projects/:id/publishing` (markdown)
+- `GET /api/creator/projects/:id/export` (ZIP: `project.json`, `script.md`, assets, consent)
+- `GET /api/creator/health` (provider configuration booleans and model ids only; no keys)
+- Mounted by `registerCreatorRoutes(app)` at the top of `startServer()` in `server.ts`, before Vite middleware.
+
+### Voice stage
+- `src/server/creator/voice.ts`: sequential per-scene job against the existing worker `/clone_voice`; each WAV is written and checkpointed in `project.voice.scenes[sceneId]` before the next scene starts.
+- Accepts only a 3–30s RIFF/WAVE reference (requested asset → last used → first `reference_audio`). Scene must have `voiceText`; a job cannot start without a reference clip.
+- Real progress from stored takes; project becomes `voice_ready` only when every scripted scene has audio. Cancel and failure keep finished takes and never fabricate audio.
+- `recoverInterruptedVoiceJobs()` converts `queued`/`running` to `interrupted` on boot; resuming synthesizes only missing scenes.
+- Atomic writes use a UUID temp suffix because concurrent job/cancel writes in the same millisecond previously collided.
+- `VoicePanel.tsx`: provider picker from the Studio's stored worker configs, reference upload/select, optional transcript, progress bar, cancel, per-scene players and regenerate.
+
+### Render stage
+- `src/server/creator/render.ts`: asynchronous FFmpeg renderer for uploaded scene visuals plus the synthesized scene narration. Output is 1280×720, 30 fps, H.264 + AAC, `+faststart`.
+- Requires a saved script, narration for every scene and a `scene_visual` asset for every scene. Missing items fail with real counts; a running job returns 409; an already-finished render returns 409 until a visual or narration changes.
+- Per-scene clips are written to `data/projects/<uuid>/render/scene-NN.mp4` and checkpointed in `render.scenes[sceneId]`. A clip is reused on resume only when its stored narration and visual asset ids match and the file exists.
+- `render.progress` and `completedScenes` reflect real stored clips. Only a completed, probed assembly sets project status `ready` and attaches a `final_video` asset.
+- Cancel aborts the ffmpeg child, waits on the job's `done` promise, then records `cancelled`; this closed a real race where an immediate resume saw a stale running job and got 409. Finished clips are kept.
+- Failure/cancel never produces a placeholder video; errors carry the last ffmpeg stderr lines. `ffmpeg`/`ffprobe` must be on `PATH`.
+- `recoverInterruptedRenderJobs()` marks `queued`/`running` as `interrupted` and running scenes as `pending` on boot; resume re-encodes only missing scenes.
+- `scene_audio` and `final_video` are server-owned asset kinds and are rejected by the public asset upload route. Replacing a visual on a `ready` project resets it to `assets_ready`.
+- `RenderPanel.tsx`: readiness counters, per-scene visual upload/replace with thumbnails, real progress, cancel, final video player and download. Copy states explicitly that it does not generate footage or an avatar.
+
+### Captions and publishing
+- `src/server/creator/publish.ts`: `collectCues` derives one cue per scene from stored narration; SRT, ASS and the markdown publishing pack all share those timings.
+- Captions require a saved script and a WAV for every scene; otherwise `400` with the real missing count. Cue text is the scene subtitle (fallback voiceText); timestamps accumulate real `durationSeconds`.
+- ASS export (`?format=ass`) uses a 1280×720 style, language-appropriate Noto/DejaVu font, bottom-center outline and the same cues as the SRT.
+- Publishing pack includes title, description, tags, hashtags, chapters, thumbnail prompt, disclosure and sources. Chapters use real cumulative audio timings; incomplete narration prints an explicit pending note instead of estimated timestamps.
+- Thumbnails use the asset route with `kind: "thumbnail"`; the UI shows the current image and lets the creator copy the prompt. No image provider is connected, so nothing is generated.
+- `PublishingPanel.tsx`: caption readiness and SRT/ASS downloads, thumbnail upload/preview, prompt copy, chapters note and publishing-pack download.
+- ZIP export now adds `<topic>.srt`, `<topic>.ass` and `<topic>-publishing.md` when the project has the data to derive them.
+- Render POST accepts `{ "burnCaptions": true }`; the final assembly writes `render/captions.ass` and re-encodes the concat with the `ass` filter. Stream-copy assembly is used when disabled.
+
+### UI
+- `src/components/creator/CreatorStudio.tsx`: project list, new-project wizard, editor, save/export/delete, provider status, consent card, production-stage rail, 2s polling while a voice or render job is queued/running.
+- `src/components/creator/ScriptEditor.tsx`: narration, scene cards, chapters, tags/hashtags, thumbnail prompt, disclosure, sources.
+- `src/components/creator/VoicePanel.tsx`: per-scene narration synthesis UI.
+- `src/components/creator/RenderPanel.tsx`: per-scene visual upload, render progress, cancel and final video player.
+- `src/components/creator/PublishingPanel.tsx`: captions download, thumbnail upload/preview, prompt copy, publishing pack download.
+- `TopNav` and `App` gained a `creator` tab. Script, voice, render, captions and publishing run for real; the presenter stage is explicitly labelled as pending the avatar spike, and the UI never claims a video exists before one is encoded.
+
+### Verification (2026-11-04)
+- `npm run lint` clean; `npm run build` passes (503.14 kB bundle).
+- `curl`: create → list → manual PATCH (`script_ready`) → PNG asset upload (`assets_ready`) → ZIP export containing `project.json`, `script.md`, `assets/dot.png` → delete.
+- Voice against a contract stand-in worker (`/tmp/opencode/fake_voxcpm_worker.py`, test-only): 2-scene job → `voice_ready`, 24kHz mono WAVs, ZIP contains `assets/scene-<id>.wav`; wrong token fails with the token message and keeps prior takes; no pending scenes returns 409; cancel keeps both takes.
+- Restart recovery: killed the server mid-job, restarted → `interrupted` with restart message, scene 1 kept, resume completed only scene 2.
+- Playwright: provider config from localStorage → open project → upload 5s WAV reference → synthesize → two `<audio>` players streaming scene assets. Screenshot reviewed.
+- Render E2E with the fake worker: 2 scenes, 5s reference, blue/green PNG visuals → 202 → `Video ready: 2 scenes, 4.5s at 1280×720.`; final asset 120025 bytes, ffprobe `h264`/`aac` 1280×720 4.4613s; ZIP contains scene WAVs, visuals and `final-video.mp4`.
+- Render cancel: 6 scenes, cancel 0.4s after start → `cancelled`, 1 clip kept, `running:false`; immediate resume → `Resuming: 1 of 6 scene clips already exist.` → complete 12.62s.
+- Render recovery: 8 scenes, killed the server after 2 clips, restart → `interrupted`, 2 clips kept, rest `pending`, no final asset; resume → complete 17.78s.
+- Render UI (Playwright): `Scene render` → `Render video` → `Video ready`; `<video>` streams the final asset; screenshot reviewed with readiness counters, blue/green thumbnails, 100% progress bar and download link.
+- Captions E2E with the fake worker: request before narration → `400` / `2 missing`; after synthesis the SRT cues start at `00:00:00,000`, `00:00:01,110`, `00:00:02,220` and fall back to `voiceText` when a subtitle is empty.
+- Publishing pack: chapters `00:00 — Opening`, `00:01 — Scene 2` from real audio timings; includes source, disclosure and `SRT available: 2 cues`; ZIP contains the SRT, publishing markdown and `assets/thumbnail.png`.
+- Publishing UI (Playwright): `Publishing package` panel, SRT and pack links, prompt text, caption/chapter notes; uploaded PNG shows `Thumbnail saved`. Screenshot reviewed.
+- ASS burn-in E2E: 2-scene project → `?format=ass` returns correct cues and fonts, unsupported format returns 400; render with `burnCaptions: true` completes with `with burned-in captions`, ffprobe h264 1280×720, extracted frame shows the caption at bottom center; ZIP includes the `.ass`.
+- ASS UI (Playwright): `Download ASS` link, `Burn in captions` checkbox, render completes with burned-in captions and a `<video>` element. Screenshot reviewed.
+- Script generation with no keys returns HTTP 500 with the honest “No script provider is configured…” message.
+- Not verified here: live script generation (no `.env` keys), live T4 voice synthesis, and the T4 avatar spike.
+
+### Next
+- Phase 4.2: generated notebooks are at `notebooks/kaggle/{sadtalker,musetalk}_spike/`; run them on a real Kaggle T4 (consented photo + 3–30s WAV), fill the result table in `docs/creator/avatar-spike.md`, then integrate only an engine that produced a real clip.
+- Phase 4.4b: presenter/avatar stage behind the consent gate, using the winning T4 engine; the current renderer already accepts presenter clips as `scene_visual` MP4s.
+- Phase 4.5 remaining: an image provider for generated thumbnails (with explicit user approval). ASS and burned-in captions are done.
