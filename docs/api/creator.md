@@ -505,3 +505,38 @@ Approval uses the normal asset route with `generatedBy`:
 Only after this succeeds does the image become a project asset and appear in the
 ZIP export. Discarding a candidate simply drops it from the browser; no file was
 ever written.
+
+## Render format presets (Phase 4.8)
+
+The render stage supports three output formats:
+
+| Preset | Dimensions | Use |
+| --- | --- | --- |
+| `landscape` (default) | 1280×720 | YouTube and desktop |
+| `portrait` | 720×1280 | Shorts, Reels, TikTok |
+| `square` | 960×960 | Feed posts |
+
+Pass the preset when starting a render:
+
+```bash
+curl -s -X POST http://localhost:3000/api/creator/projects/<uuid>/render \
+  -H 'Content-Type: application/json' \
+  -d '{ "preset": "portrait", "burnCaptions": true }'
+```
+
+Scene visuals are scaled to fit inside the target frame and padded with black
+bars; aspect ratio is never stretched. Every scene clip is encoded at the
+selected dimensions and stored as `render/scene-NN.mp4`.
+
+Changing the preset invalidates scene-clip reuse: clips encoded at another size
+are never reused, so the job re-encodes every scene. The completed-render `409`
+applies only when the requested preset and `burnCaptions` flag match the
+finished render; changing either allows a re-render.
+
+The downloaded ASS uses the last completed render's dimensions for `PlayResX`,
+`PlayResY`, font size and margins. Before the first render it defaults to
+1280×720.
+
+The final `ffprobe` check compares against the job's stored width and height,
+and the completion message reports the real measured size, for example
+`Video ready: 2 scenes, 12.0s at 720×1280 with burned-in captions.`

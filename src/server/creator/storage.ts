@@ -104,7 +104,11 @@ function normalizeProject(raw: CreatorProject): CreatorProject {
     script: raw.script ?? null,
     consent: raw.consent ?? null,
     render: raw.render
-      ? { ...raw.render, burnCaptions: raw.render.burnCaptions === true }
+      ? {
+          ...raw.render,
+          preset: raw.render.preset ?? 'landscape',
+          burnCaptions: raw.render.burnCaptions === true
+        }
       : null,
     voice: {
       ...defaultVoiceState(),

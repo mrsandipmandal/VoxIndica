@@ -8,6 +8,7 @@ import type {
   CreatorProjectSummary,
   CreatorVoiceJobInfo,
   GeneratedThumbnail,
+  RenderPreset,
   StartVoiceJobInput,
   UpdateProjectInput
 } from '../types/creator';
@@ -171,13 +172,16 @@ export const creatorService = {
 
   async startRender(
     projectId: string,
-    options: { burnCaptions?: boolean } = {}
+    options: { burnCaptions?: boolean; preset?: RenderPreset } = {}
   ): Promise<CreatorProject> {
     const data = await request<{ ok: true; project: CreatorProject }>(
       `/api/creator/projects/${encodeURIComponent(projectId)}/render`,
       {
         method: 'POST',
-        body: JSON.stringify({ burnCaptions: options.burnCaptions === true })
+        body: JSON.stringify({
+          burnCaptions: options.burnCaptions === true,
+          ...(options.preset ? { preset: options.preset } : {})
+        })
       }
     );
     return data.project;

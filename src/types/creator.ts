@@ -149,6 +149,18 @@ export interface CreatorVoiceState {
   updatedAt: string;
 }
 
+export const RENDER_PRESETS = ['landscape', 'portrait', 'square'] as const;
+export type RenderPreset = (typeof RENDER_PRESETS)[number];
+
+export const RENDER_PRESET_DIMENSIONS: Record<
+  RenderPreset,
+  { width: number; height: number; label: string }
+> = {
+  landscape: { width: 1280, height: 720, label: 'Landscape 16:9' },
+  portrait: { width: 720, height: 1280, label: 'Portrait 9:16' },
+  square: { width: 960, height: 960, label: 'Square 1:1' }
+};
+
 export type RenderJobStatus =
   | 'idle'
   | 'queued'
@@ -178,6 +190,7 @@ export interface RenderSceneState {
 export interface RenderJob {
   id: string;
   provider: 'local';
+  preset: RenderPreset;
   status: RenderJobStatus;
   progress: number;
   completedScenes: number;

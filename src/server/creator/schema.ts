@@ -4,7 +4,8 @@ import {
   CREATOR_STATUSES,
   CREATOR_TONES,
   CREATOR_VIDEO_MODES,
-  CREATOR_WORKER_PROVIDERS
+  CREATOR_WORKER_PROVIDERS,
+  RENDER_PRESETS
 } from '../../types/creator';
 
 const languageSchema = z.enum(CREATOR_LANGUAGES);
@@ -92,7 +93,8 @@ export const startVoiceJobSchema = z.object({
 });
 
 export const startRenderSchema = z.object({
-  burnCaptions: z.boolean().optional().default(false)
+  burnCaptions: z.boolean().optional().default(false),
+  preset: z.enum(RENDER_PRESETS).optional().default('landscape')
 });
 
 export const generateThumbnailSchema = z.object({

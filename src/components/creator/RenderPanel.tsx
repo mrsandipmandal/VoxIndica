@@ -11,7 +11,8 @@ import {
   Upload,
   Video
 } from 'lucide-react';
-import type { CreatorAsset, CreatorProject } from '../../types/creator';
+import type { CreatorAsset, CreatorProject, RenderPreset } from '../../types/creator';
+import { RENDER_PRESET_DIMENSIONS, RENDER_PRESETS } from '../../types/creator';
 import { creatorService } from '../../services/creatorService';
 
 interface RenderPanelProps {
@@ -60,11 +61,19 @@ export function RenderPanel({
   const [starting, setStarting] = useState(false);
   const [cancelling, setCancelling] = useState(false);
   const [burnCaptions, setBurnCaptions] = useState(project.render?.burnCaptions === true);
+  const [preset, setPreset] = useState<RenderPreset>(
+    project.render?.preset ?? 'landscape'
+  );
 
   const scenes = project.script?.scenes ?? [];
   const render = project.render;
   const running = render?.status === 'queued' || render?.status === 'running';
   const complete = render?.status === 'complete';
+  const dimensions = RENDER_PRESET_DIMENSIONS[preset];
+  const formatChanged =
+    !render ||
+    render.preset !== preset ||
+    render.burnCaptions !== burnCaptions;
   const finalAsset = useMemo(() => {
     const byId = render?.outputAssetId
       ? project.assets.find((asset) => asset.id === render.outputAssetId)
@@ -77,6 +86,7 @@ export function RenderPanel({
   const missingAudio = scenes.filter((scene) => !project.voice.scenes[scene.id]);
   const missingVisual = scenes.filter((scene) => !latestVisual(project, scene.id));
   const ready = scenes.length > 0 && !missingAudio.length && !missingVisual.length;
+  const canStart = ready && !starting && formatChanged;
 
   const uploadVisual = async (sceneId: string, file: File) => {
     const allowed = ['image/png', 'image/jpeg', 'image/webp', 'video/mp4', 'video/webm'];
@@ -112,7 +122,7 @@ export function RenderPanel({
   const start = async () => {
     setStarting(true);
     try {
-      const next = await creatorService.startRender(project.id, { burnCaptions });
+      const next = await creatorService.startRender(project.id, { burnCaptions, preset });
       onProjectChange(next);
       onNotice('Render queued on this machine. Scene clips are written one at a time.');
     } catch (caught: any) {
@@ -145,7 +155,7 @@ export function RenderPanel({
           </h3>
           <p className="text-[11px] text-slate-500 mt-1 leading-relaxed">
             Assembles the visuals you uploaded with the synthesized scene narration into
-            1280×720 cuts. It does not generate footage or an avatar.
+            a {dimensions.width}×{dimensions.height} cut. It does not generate footage or an avatar.
           </p>
         </div>
         <span className="text-[10px] font-mono text-slate-500 shrink-0">
@@ -332,11 +342,32 @@ export function RenderPanel({
         </p>
       ) : null}
 
-      <label className={`flex items-start gap-2 text-[11px] leading-relaxed ${running || complete ? 'text-slate-500' : 'text-slate-300'}`}>
+      <div>
+        <label className={labelClass}>Output format</label>
+        <select
+          value={preset}
+          disabled={running}
+          onChange={(event) => setPreset(event.target.value as RenderPreset)}
+          className="w-full bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60 disabled:opacity-50"
+        >
+          {RENDER_PRESETS.map((id) => (
+            <option key={id} value={id}>
+              {RENDER_PRESET_DIMENSIONS[id].label} · {RENDER_PRESET_DIMENSIONS[id].width}×
+              {RENDER_PRESET_DIMENSIONS[id].height}
+            </option>
+          ))}
+        </select>
+        <p className="text-[10px] text-slate-500 mt-1 leading-snug">
+          Changing the format re-encodes every scene clip; existing clips in another
+          size are not reused.
+        </p>
+      </div>
+
+      <label className={`flex items-start gap-2 text-[11px] leading-relaxed ${running ? 'text-slate-500' : 'text-slate-300'}`}>
         <input
           type="checkbox"
           checked={burnCaptions}
-          disabled={running || complete}
+          disabled={running}
           onChange={(event) => setBurnCaptions(event.target.checked)}
           className="mt-0.5 accent-amber-500"
         />
@@ -366,7 +397,7 @@ export function RenderPanel({
         ) : (
           <button
             onClick={() => void start()}
-            disabled={!ready || starting || (complete && Boolean(finalAsset))}
+            disabled={!canStart}
             className="flex items-center gap-2 px-3.5 py-2 rounded-md bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 text-xs font-semibold transition-colors"
           >
             {starting ? (
@@ -374,11 +405,13 @@ export function RenderPanel({
             ) : (
               <Play className="w-3.5 h-3.5" />
             )}
-            {render && render.completedScenes > 0 && !complete
-              ? 'Resume render'
-              : complete && !finalAsset
-                ? 'Render again'
-                : 'Render video'}
+            {complete && formatChanged
+              ? 'Render again'
+              : render && render.completedScenes > 0 && !complete
+                ? 'Resume render'
+                : complete && !finalAsset
+                  ? 'Render again'
+                  : 'Render video'}
           </button>
         )}
         <span className="text-[10px] text-slate-500 leading-snug">

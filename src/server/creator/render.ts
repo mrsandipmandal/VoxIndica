@@ -6,8 +6,10 @@ import type {
   CreatorAsset,
   CreatorProject,
   RenderJob,
+  RenderPreset,
   RenderSceneState
 } from '../../types/creator';
+import { RENDER_PRESET_DIMENSIONS } from '../../types/creator';
 import {
   CreatorError,
   assetFilePath,
@@ -18,8 +20,6 @@ import {
 } from './storage';
 import { buildAssCaptions } from './publish';
 
-const WIDTH = 1280;
-const HEIGHT = 720;
 const FPS = 30;
 const SCENE_TIMEOUT_MS = 10 * 60 * 1000;
 
@@ -66,10 +66,10 @@ function sceneClipPath(projectId: string, index: number): string {
   return path.join(renderWorkingDir(projectId), `scene-${String(index + 1).padStart(2, '0')}.mp4`);
 }
 
-function scaleFilter(): string {
+function scaleFilter(width: number, height: number): string {
   return [
-    `scale=${WIDTH}:${HEIGHT}:force_original_aspect_ratio=decrease`,
-    `pad=${WIDTH}:${HEIGHT}:(ow-iw)/2:(oh-ih)/2:color=black`,
+    `scale=${width}:${height}:force_original_aspect_ratio=decrease`,
+    `pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`,
     'setsar=1',
     `fps=${FPS}`
   ].join(',');
@@ -80,7 +80,9 @@ function sceneArgs(
   visualMime: string,
   audioPath: string,
   durationSeconds: number,
-  outputPath: string
+  outputPath: string,
+  width: number,
+  height: number
 ): string[] {
   const base = ['-y', '-hide_banner', '-loglevel', 'error'];
   const videoInput =
@@ -100,7 +102,7 @@ function sceneArgs(
     '-map',
     '1:a:0',
     '-vf',
-    scaleFilter(),
+    scaleFilter(width, height),
     '-c:v',
     'libx264',
     '-preset',
@@ -374,7 +376,9 @@ async function runRender(
           visual.mimeType,
           audioPath,
           Math.max(0.5, audio.durationSeconds),
-          clip
+          clip,
+          current.width,
+          current.height
         ),
         entry,
         `Scene ${index + 1}`
@@ -426,7 +430,10 @@ async function runRender(
     await fs.rm(finalPath, { force: true });
 
     if (burnCaptions) {
-      const { ass } = buildAssCaptions(await readProject(projectId));
+      const { ass } = buildAssCaptions(await readProject(projectId), {
+        width: current.width,
+        height: current.height
+      });
       await fs.writeFile(path.join(working, 'captions.ass'), ass, 'utf8');
     }
 
@@ -470,9 +477,13 @@ async function runRender(
     );
 
     const probe = await probeVideo(finalPath);
-    if (!probe.durationSeconds || probe.width !== WIDTH || probe.height !== HEIGHT) {
+    if (
+      !probe.durationSeconds ||
+      probe.width !== current.width ||
+      probe.height !== current.height
+    ) {
       throw new CreatorError(
-        `The assembled video is not ${WIDTH}×${HEIGHT} (${probe.width}×${probe.height}, ${probe.durationSeconds}s).`,
+        `The assembled video is not ${current.width}×${current.height} (${probe.width}×${probe.height}, ${probe.durationSeconds}s).`,
         500
       );
     }
@@ -516,7 +527,7 @@ async function runRender(
 
 export async function startRender(
   projectId: string,
-  options: { burnCaptions?: boolean } = {}
+  options: { burnCaptions?: boolean; preset?: RenderPreset } = {}
 ): Promise<CreatorProject> {
   if (runningRenders.has(projectId)) {
     throw new CreatorError('A render is already running for this project.', 409);
@@ -545,15 +556,26 @@ export async function startRender(
   }
 
   if (project.render?.status === 'complete' && project.render.outputAssetId) {
-    throw new CreatorError(
-      'This project already has a finished render. Change a scene visual or narration to regenerate.',
-      409
-    );
+    const requestedPreset = options.preset ?? project.render.preset;
+    const requestedBurn =
+      options.burnCaptions ?? project.render.burnCaptions ?? false;
+    if (
+      project.render.preset === requestedPreset &&
+      project.render.burnCaptions === requestedBurn
+    ) {
+      throw new CreatorError(
+        'This project already has a finished render in this format. Change the preset, captions, a scene visual or narration to regenerate.',
+        409
+      );
+    }
   }
 
   const total = script.scenes.length;
   const now = new Date().toISOString();
   const previous = project.render;
+  const preset = options.preset ?? previous?.preset ?? 'landscape';
+  const { width, height } = RENDER_PRESET_DIMENSIONS[preset];
+  const samePreset = previous?.width === width && previous?.height === height;
   const scenes: Record<string, RenderSceneState> = {};
   let completed = 0;
   for (let index = 0; index < script.scenes.length; index += 1) {
@@ -566,6 +588,7 @@ export async function startRender(
       .then((stat) => stat.size > 0)
       .catch(() => false);
     const reusable =
+      samePreset &&
       old?.status === 'complete' &&
       old.audioAssetId === audio.assetId &&
       old.visualAssetId === visual.id &&
@@ -589,6 +612,7 @@ export async function startRender(
   const job: RenderJob = {
     id: randomUUID(),
     provider: 'local',
+    preset,
     burnCaptions: options.burnCaptions ?? project.render?.burnCaptions ?? false,
     status: 'queued',
     progress: Math.round((completed / total) * 100),
@@ -597,11 +621,11 @@ export async function startRender(
     message:
       completed > 0
         ? `Resuming: ${completed} of ${total} scene clips already exist.`
-        : `Queued ${total} scenes at ${WIDTH}×${HEIGHT}, ${FPS}fps.`,
+        : `Queued ${total} scenes at ${width}×${height}, ${FPS}fps.`,
     startedAt: now,
     updatedAt: now,
-    width: WIDTH,
-    height: HEIGHT,
+    width,
+    height,
     fps: FPS,
     scenes
   };

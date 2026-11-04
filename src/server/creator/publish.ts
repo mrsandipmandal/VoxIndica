@@ -139,20 +139,33 @@ export interface AssCaptionPackage {
   fileName: string;
 }
 
-export function buildAssCaptions(project: CreatorProject): AssCaptionPackage {
+export interface AssCaptionOptions {
+  width?: number;
+  height?: number;
+}
+
+export function buildAssCaptions(
+  project: CreatorProject,
+  options: AssCaptionOptions = {}
+): AssCaptionPackage {
   const { cues, durationSeconds } = collectCues(project);
   const font = assFontFor(project);
+  const width = Math.round(options.width || 1280);
+  const height = Math.round(options.height || 720);
+  const fontSize = Math.max(28, Math.round(Math.min(width, height) / 16.36));
+  const marginH = Math.max(24, Math.round(width * 0.055));
+  const marginV = Math.max(24, Math.round(height * 0.067));
   const lines = [
     '[Script Info]',
     'ScriptType: v4.00+',
     'WrapStyle: 2',
     'ScaledBorderAndShadow: yes',
-    'PlayResX: 1280',
-    'PlayResY: 720',
+    `PlayResX: ${width}`,
+    `PlayResY: ${height}`,
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: VoxIndica,${font},44,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,70,70,48,1`,
+    `Style: VoxIndica,${font},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,${marginH},${marginH},${marginV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'
@@ -266,8 +279,15 @@ export async function captionsForProject(projectId: string): Promise<CaptionPack
   return buildCaptions(await readProject(projectId));
 }
 
-export async function assCaptionsForProject(projectId: string): Promise<AssCaptionPackage> {
-  return buildAssCaptions(await readProject(projectId));
+export async function assCaptionsForProject(
+  projectId: string,
+  options: AssCaptionOptions = {}
+): Promise<AssCaptionPackage> {
+  const project = await readProject(projectId);
+  return buildAssCaptions(project, {
+    width: options.width ?? project.render?.width,
+    height: options.height ?? project.render?.height
+  });
 }
 
 export async function publishingForProject(projectId: string): Promise<PublishingPackage> {
