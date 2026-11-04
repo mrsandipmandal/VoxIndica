@@ -312,6 +312,7 @@ export async function saveAsset(
     mimeType: string;
     dataBase64: string;
     sceneId?: string;
+    generatedBy?: string;
   }
 ): Promise<{ project: CreatorProject; asset: CreatorAsset }> {
   const project = await readProject(projectId);
@@ -370,6 +371,7 @@ export async function saveAsset(
     sizeBytes: buffer.length,
     createdAt: new Date().toISOString(),
     ...(input.sceneId ? { sceneId: input.sceneId } : {}),
+    ...(input.generatedBy ? { generatedBy: input.generatedBy } : {}),
     ...(wav ? { durationSeconds: Math.round(wav.durationSeconds * 100) / 100 } : {})
   };
 

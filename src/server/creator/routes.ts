@@ -5,6 +5,7 @@ import {
   consentSchema,
   createProjectSchema,
   generateScriptSchema,
+  generateThumbnailSchema,
   startRenderSchema,
   startVoiceJobSchema,
   updateProjectSchema,
@@ -32,6 +33,7 @@ import {
   startRender
 } from './render';
 import { assCaptionsForProject, captionsForProject, publishingForProject } from './publish';
+import { generateThumbnail, thumbnailProviderStatus } from './thumbnail';
 
 type AsyncHandler = (req: Request, res: Response) => Promise<void>;
 
@@ -61,8 +63,18 @@ export function registerCreatorRoutes(app: Express): void {
       res.json({
         ok: true,
         storageRoot: creatorDataRoot(),
-        providers: providerStatus()
+        providers: providerStatus(),
+        image: thumbnailProviderStatus()
       });
+    })
+  );
+
+  app.post(
+    '/api/creator/projects/:id/thumbnail/generate',
+    wrap(async (req, res) => {
+      const body = generateThumbnailSchema.parse(req.body ?? {});
+      const thumbnail = await generateThumbnail(req.params.id, body.prompt);
+      res.json({ ok: true, thumbnail });
     })
   );
 

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   AlertTriangle,
   Captions,
@@ -8,9 +8,11 @@ import {
   Image as ImageIcon,
   Loader2,
   Share2,
-  Upload
+  Sparkles,
+  Upload,
+  X
 } from 'lucide-react';
-import type { CreatorProject } from '../../types/creator';
+import type { CreatorProject, GeneratedThumbnail } from '../../types/creator';
 import { creatorService } from '../../services/creatorService';
 
 interface PublishingPanelProps {
@@ -48,6 +50,14 @@ export function PublishingPanel({
   const fileInput = useRef<HTMLInputElement | null>(null);
   const [uploading, setUploading] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [promptDraft, setPromptDraft] = useState(project.script?.thumbnailPrompt ?? '');
+  const [generating, setGenerating] = useState(false);
+  const [approving, setApproving] = useState(false);
+  const [candidate, setCandidate] = useState<GeneratedThumbnail | null>(null);
+
+  useEffect(() => {
+    setPromptDraft(project.script?.thumbnailPrompt ?? '');
+  }, [project.id, project.script?.thumbnailPrompt]);
 
   const script = project.script;
   const scenes = script?.scenes ?? [];
@@ -96,6 +106,46 @@ export function PublishingPanel({
       window.setTimeout(() => setCopied(false), 2000);
     } catch {
       onError('The browser refused clipboard access. Select the prompt and copy it manually.');
+    }
+  };
+
+  const generateCandidate = async () => {
+    if (!promptDraft.trim()) {
+      onError('Write a thumbnail prompt before generating.');
+      return;
+    }
+    setGenerating(true);
+    try {
+      const result = await creatorService.generateThumbnail(project.id, promptDraft.trim());
+      setCandidate(result);
+      onNotice(
+        `Thumbnail generated with ${result.provider} (${result.model}). Review it before using it.`
+      );
+    } catch (caught: any) {
+      onError(caught?.message || 'Thumbnail generation failed.');
+    } finally {
+      setGenerating(false);
+    }
+  };
+
+  const approveCandidate = async () => {
+    if (!candidate) return;
+    setApproving(true);
+    try {
+      const result = await creatorService.uploadAsset(project.id, {
+        kind: 'thumbnail',
+        fileName: 'generated-thumbnail.png',
+        mimeType: candidate.mimeType,
+        dataBase64: candidate.base64,
+        generatedBy: `${candidate.provider}/${candidate.model}`
+      });
+      onProjectChange(result.project);
+      onNotice(`Thumbnail saved: ${result.asset.fileName}.`);
+      setCandidate(null);
+    } catch (caught: any) {
+      onError(caught?.message || 'Could not save the generated thumbnail.');
+    } finally {
+      setApproving(false);
     }
   };
 
@@ -155,7 +205,7 @@ export function PublishingPanel({
           <p className="text-[11px] text-slate-400 leading-relaxed">
             {thumbnail
               ? `Using ${thumbnail.fileName}. Replace it any time; the previous file is removed.`
-              : 'No image provider is connected. Upload the thumbnail you approve — nothing is generated or invented here.'}
+              : 'Upload an image you approve, or generate one below and approve it before it is saved.'}
           </p>
           <div className="flex items-center gap-3">
             {thumbnail ? (
@@ -209,9 +259,68 @@ export function PublishingPanel({
             {copied ? 'copied' : 'copy prompt'}
           </button>
         </div>
-        <p className="text-[11px] text-slate-300 bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-2 leading-relaxed whitespace-pre-wrap">
-          {script?.thumbnailPrompt || 'No thumbnail prompt was written for this script.'}
-        </p>
+        <textarea
+          className="w-full min-h-20 bg-[#0B0F17] border border-slate-800 rounded-lg px-3 py-2 text-[11px] text-slate-300 leading-relaxed focus:outline-none focus:border-amber-500/60"
+          value={promptDraft}
+          onChange={(event) => setPromptDraft(event.target.value)}
+          placeholder="Describe the thumbnail you want…"
+          disabled={generating || approving}
+        />
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => void generateCandidate()}
+            disabled={generating || approving || !promptDraft.trim()}
+            className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md border border-amber-500/40 text-amber-300 hover:bg-amber-500/10 text-[11px] transition-colors disabled:opacity-50"
+          >
+            {generating ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Sparkles className="w-3 h-3" />
+            )}
+            {generating ? 'Generating…' : candidate ? 'Generate again' : 'Generate with Gemini'}
+          </button>
+          <span className="text-[10px] text-slate-500 leading-relaxed">
+            Needs GEMINI_API_KEY. The image is not saved until you approve it.
+          </span>
+        </div>
+
+        {candidate ? (
+          <div className="p-3 bg-[#0B0F17] border border-amber-500/30 rounded-lg space-y-2">
+            <img
+              src={`data:${candidate.mimeType};base64,${candidate.base64}`}
+              alt="Generated thumbnail candidate"
+              className="w-full max-w-xs rounded border border-slate-800"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => void approveCandidate()}
+                disabled={approving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-amber-500 hover:bg-amber-400 text-slate-950 text-[11px] font-semibold disabled:opacity-50"
+              >
+                {approving ? (
+                  <Loader2 className="w-3 h-3 animate-spin" />
+                ) : (
+                  <CheckCircle2 className="w-3 h-3" />
+                )}
+                Use image
+              </button>
+              <button
+                type="button"
+                onClick={() => setCandidate(null)}
+                disabled={approving}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-700 text-slate-300 hover:text-rose-300 text-[11px] disabled:opacity-50"
+              >
+                <X className="w-3 h-3" />
+                Discard
+              </button>
+              <span className="text-[10px] font-mono text-slate-500">
+                {candidate.provider} · {candidate.model}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </div>
 
       <div className="flex flex-wrap items-center justify-between gap-3 border-t border-slate-800 pt-3">

@@ -30,7 +30,7 @@ npm run build
 - **Render jobs are checkpointed.** One scene clip is encoded and persisted at a time; a clip is reused only when its narration and visual asset ids still match. Cancel kills the active ffmpeg child and keeps finished clips.
 - **ffmpeg is a local dependency.** `ffmpeg` and `ffprobe` must be on `PATH`; spawn failures are reported, never hidden.
 - **Captions and chapters use stored audio.** SRT cues and chapter timestamps accumulate the real scene WAV durations; never estimate them from word counts or scene plans. Incomplete narration hides timestamps instead of guessing.
-- **No generated thumbnail without a provider.** The thumbnail stage accepts only an image the creator uploads after approving it; the prompt is shown and copyable. Never fake an image.
+- **Generated thumbnails require explicit approval.** Gemini may propose an image from the saved prompt, but it is returned in memory only. It becomes a project asset only after the creator clicks `Use image`, and the asset records `generatedBy`. Discarding writes nothing. Without `GEMINI_API_KEY`, return the honest 503 and keep the upload path.
 - **Publishing packs do not invent facts.** Sources, description, tags and disclosure come from the saved script; missing fields stay visibly missing.
 - **ASS captions share the SRT timings.** Both formats come from `collectCues` and real WAV durations. Burn-in sets `render.burnCaptions` and re-encodes the concat with `ass=captions.ass`; it never fabricates cue text or invents timing.
 - **Do not break voice endpoints.** `/api/tts` and the worker contract (`/clone_voice`, `/synthesize`, `/shutdown`) are separate from `/api/creator/*`.

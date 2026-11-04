@@ -45,6 +45,7 @@
 - [x] Creator Studio Phase 4.3 — checkpointed per-scene voice stage with real progress, cancel and restart recovery
 - [x] Creator Studio Phase 4.4 — checkpointed FFmpeg scene renderer (uploaded visuals + narration → 1280×720 MP4)
 - [x] Creator Studio Phase 4.5 — SRT/ASS captions from real narration durations, burned-in caption render, publishing pack with computed chapters, approved-thumbnail upload
+- [x] Creator Studio Phase 4.7 — approval-gated Gemini thumbnail generation (live generation needs GEMINI_API_KEY); assets are written only after the creator approves
 - [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
 - [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
 - [ ] End-to-End Test Suite Verification (Stage 5)
@@ -140,7 +141,8 @@
 - Captions require a saved script and a WAV for every scene; otherwise `400` with the real missing count. Cue text is the scene subtitle (fallback voiceText); timestamps accumulate real `durationSeconds`.
 - ASS export (`?format=ass`) uses a 1280×720 style, language-appropriate Noto/DejaVu font, bottom-center outline and the same cues as the SRT.
 - Publishing pack includes title, description, tags, hashtags, chapters, thumbnail prompt, disclosure and sources. Chapters use real cumulative audio timings; incomplete narration prints an explicit pending note instead of estimated timestamps.
-- Thumbnails use the asset route with `kind: "thumbnail"`; the UI shows the current image and lets the creator copy the prompt. No image provider is connected, so nothing is generated.
+- Thumbnails use the asset route with `kind: "thumbnail"`; the UI shows the current image and lets the creator copy or edit the prompt.
+- `src/server/creator/thumbnail.ts` can propose a thumbnail with Gemini (`GEMINI_IMAGE_MODEL`, default `gemini-2.5-flash-image`). The image is returned in memory only; it becomes an asset only after the creator clicks `Use image`, which uploads it with `generatedBy`. Discard writes nothing. Without `GEMINI_API_KEY` the route returns an honest 503 and the upload path still works.
 - `PublishingPanel.tsx`: caption readiness and SRT/ASS downloads, thumbnail upload/preview, prompt copy, chapters note and publishing-pack download.
 - ZIP export now adds `<topic>.srt`, `<topic>.ass` and `<topic>-publishing.md` when the project has the data to derive them.
 - Render POST accepts `{ "burnCaptions": true }`; the final assembly writes `render/captions.ass` and re-encodes the concat with the `ass` filter. Stream-copy assembly is used when disabled.
@@ -171,7 +173,9 @@
 - Script generation with no keys returns HTTP 500 with the honest “No script provider is configured…” message.
 - Not verified here: live script generation (no `.env` keys), live T4 voice synthesis, and the T4 avatar spike.
 
+- Thumbnail generation: `/api/creator/health` reports `image.configured` and the model id. Without `GEMINI_API_KEY`, `POST /projects/:id/thumbnail/generate` returns `503` with the honest key message; the upload path still works. Live Gemini generation is not verified here because no image key is configured.
+
 ### Next
 - Phase 4.2: generated notebooks are at `notebooks/kaggle/{sadtalker,musetalk}_spike/`; run them on a real Kaggle T4 (consented photo + 3–30s WAV), fill the result table in `docs/creator/avatar-spike.md`, then integrate only an engine that produced a real clip.
 - Phase 4.4b: presenter/avatar stage behind the consent gate, using the winning T4 engine; the current renderer already accepts presenter clips as `scene_visual` MP4s.
-- Phase 4.5 remaining: an image provider for generated thumbnails (with explicit user approval). ASS and burned-in captions are done.
+- Phase 4.5 is complete. Generated thumbnails require `GEMINI_API_KEY`; no live image call was possible in this environment.

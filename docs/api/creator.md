@@ -439,3 +439,69 @@ when the filter ran.
 Burned-in captions require complete narration, because every cue is derived from
 a stored WAV. The ZIP export now includes both `<topic>.srt` and `<topic>.ass`
 when that data exists, alongside the final video.
+
+## Generated thumbnails (Phase 4.7)
+
+Generation is opt-in and approval-gated. The server never writes a generated
+image into the project until the creator explicitly approves it.
+
+### Provider status
+
+`GET /api/creator/health` now includes:
+
+```json
+"image": { "configured": true, "model": "gemini-2.5-flash-image" }
+```
+
+Only a boolean and the model id are returned. The key never leaves the server.
+Set `GEMINI_IMAGE_MODEL` to override the default.
+
+### Generate a candidate
+
+```bash
+curl -s -X POST http://localhost:3000/api/creator/projects/<id>/thumbnail/generate \
+  -H 'Content-Type: application/json' \
+  -d '{"prompt":"A dramatic tram at dusk, 16:9"}'
+```
+
+The request uses the project's title, audience language, and the supplied prompt
+(or the saved `script.thumbnailPrompt`) to ask Gemini for a 16:9 thumbnail. It
+returns the image **in memory only**:
+
+```json
+{
+  "ok": true,
+  "thumbnail": {
+    "base64": "…",
+    "mimeType": "image/png",
+    "provider": "gemini",
+    "model": "gemini-2.5-flash-image",
+    "prompt": "the resolved prompt"
+  }
+}
+```
+
+Nothing is uploaded to `data/projects/` at this point. Without
+`GEMINI_API_KEY` the route returns `503` with an honest message telling the
+creator to add the key or upload an approved image.
+
+The response is validated: the payload must be a real PNG/JPEG/WebP and no
+larger than 10 MB, otherwise generation fails and no candidate is returned.
+
+### Approve a candidate
+
+Approval uses the normal asset route with `generatedBy`:
+
+```json
+{
+  "kind": "thumbnail",
+  "fileName": "generated-thumbnail.png",
+  "mimeType": "image/png",
+  "dataBase64": "…",
+  "generatedBy": "gemini/gemini-2.5-flash-image"
+}
+```
+
+Only after this succeeds does the image become a project asset and appear in the
+ZIP export. Discarding a candidate simply drops it from the browser; no file was
+ever written.

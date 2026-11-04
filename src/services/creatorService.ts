@@ -7,6 +7,7 @@ import type {
   CreatorProject,
   CreatorProjectSummary,
   CreatorVoiceJobInfo,
+  GeneratedThumbnail,
   StartVoiceJobInput,
   UpdateProjectInput
 } from '../types/creator';
@@ -88,6 +89,7 @@ export const creatorService = {
       mimeType: string;
       dataBase64: string;
       sceneId?: string;
+      generatedBy?: string;
     }
   ): Promise<{ asset: CreatorAsset; project: CreatorProject }> {
     const data = await request<{ ok: true; asset: CreatorAsset; project: CreatorProject }>(
@@ -112,6 +114,14 @@ export const creatorService = {
       }
     );
     return data.project;
+  },
+
+  async generateThumbnail(projectId: string, prompt = ''): Promise<GeneratedThumbnail> {
+    const data = await request<{ ok: true; thumbnail: GeneratedThumbnail }>(
+      `/api/creator/projects/${encodeURIComponent(projectId)}/thumbnail/generate`,
+      { method: 'POST', body: JSON.stringify({ prompt }) }
+    );
+    return data.thumbnail;
   },
 
   exportUrl(projectId: string): string {

@@ -98,6 +98,8 @@ export interface CreatorAsset {
   sceneId?: string;
   /** Audio assets only: duration parsed from the stored WAV header. */
   durationSeconds?: number;
+  /** Present when the asset was produced by a named provider rather than uploaded. */
+  generatedBy?: string;
 }
 
 export interface ConsentRecord {
@@ -278,6 +280,15 @@ export interface CreatorHealth {
   ok: boolean;
   storageRoot: string;
   providers: Record<CreatorProviderId, { configured: boolean; model: string }>;
+  image: { configured: boolean; model: string };
+}
+
+export interface GeneratedThumbnail {
+  base64: string;
+  mimeType: string;
+  provider: 'gemini';
+  model: string;
+  prompt: string;
 }
 
 export interface StartVoiceJobInput {

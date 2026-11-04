@@ -95,6 +95,10 @@ export const startRenderSchema = z.object({
   burnCaptions: z.boolean().optional().default(false)
 });
 
+export const generateThumbnailSchema = z.object({
+  prompt: z.string().trim().max(3000).optional()
+});
+
 export const assetUploadSchema = z.object({
   kind: z.enum([
     'presenter_photo',
@@ -108,7 +112,8 @@ export const assetUploadSchema = z.object({
   fileName: z.string().trim().min(1).max(200),
   mimeType: z.string().trim().min(3).max(120),
   dataBase64: z.string().min(16),
-  sceneId: z.string().min(1).max(64).optional()
+  sceneId: z.string().min(1).max(64).optional(),
+  generatedBy: z.string().trim().max(200).optional()
 });
 
 export type CreateProjectBody = z.infer<typeof createProjectSchema>;

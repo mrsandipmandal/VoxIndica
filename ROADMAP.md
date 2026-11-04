@@ -58,4 +58,4 @@
 - [x] ASS captions with language-appropriate fonts, plus optional burned-in caption render.
 - [x] Publishing pack export (description, tags, hashtags, real-timing chapters, disclosure, sources).
 - [x] Thumbnail upload with prompt copy and approval-by-upload workflow.
-- [ ] AI thumbnail generation with user approval (needs a configured image provider).
+- [x] AI thumbnail generation with Gemini behind explicit approval (needs `GEMINI_API_KEY`).
