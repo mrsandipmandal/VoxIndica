@@ -64,6 +64,45 @@ const getInitialVoices = (): VoicePreset[] => {
   return VOICE_PRESETS;
 };
 
+const HISTORY_STORAGE_KEY = 'voxindica_generation_history';
+const HISTORY_MAX_ENTRIES = 12;
+// Stay safely under the ~5MB localStorage quota; audio payloads dominate.
+const HISTORY_MAX_CHARS = 4_500_000;
+
+function loadStoredHistory(): SynthesisJob[] {
+  try {
+    const raw = localStorage.getItem(HISTORY_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    // blob: URLs from a previous session are dead — only data-URLs survive.
+    return parsed
+      .filter((job): job is SynthesisJob => Boolean(job && job.id))
+      .map((job) => ({ ...job, audioUrl: undefined }));
+  } catch {
+    return [];
+  }
+}
+
+function persistHistory(jobs: SynthesisJob[]): void {
+  let kept = jobs.slice(0, HISTORY_MAX_ENTRIES);
+  let payload = JSON.stringify(kept);
+  while (payload.length > HISTORY_MAX_CHARS && kept.length > 1) {
+    kept = kept.slice(0, -1);
+    payload = JSON.stringify(kept);
+  }
+  if (payload.length > HISTORY_MAX_CHARS) {
+    // One entry alone busts the quota: keep the metadata, drop the audio.
+    kept = kept.map((job) => ({ ...job, audioUrl: undefined, audioDataUrl: undefined }));
+    payload = JSON.stringify(kept);
+  }
+  try {
+    localStorage.setItem(HISTORY_STORAGE_KEY, payload);
+  } catch {
+    // Quota hard-failed — history stays in memory for this session only.
+  }
+}
+
 export default function App() {
   const providerService = ProviderService.getInstance();
 
@@ -95,7 +134,7 @@ export default function App() {
   const [activeAudioUrl, setActiveAudioUrl] = useState<string | null>(null);
   const [activeDuration, setActiveDuration] = useState<number>(0);
   const [activeSampleRate, setActiveSampleRate] = useState<number>(24000);
-  const [historyJobs, setHistoryJobs] = useState<SynthesisJob[]>([]);
+  const [historyJobs, setHistoryJobs] = useState<SynthesisJob[]>(loadStoredHistory);
 
   // Modals
   const [isProviderModalOpen, setIsProviderModalOpen] = useState(false);
@@ -250,6 +289,7 @@ export default function App() {
         status: 'completed',
         progressPercent: 100,
         audioUrl: result.audioUrl,
+        audioDataUrl: result.audioDataUrl,
         audioDurationSeconds: result.durationSeconds,
         latencyMs: result.latencyMs,
         completedAt: new Date().toISOString()
@@ -268,6 +308,11 @@ export default function App() {
     }
   };
 
+  // Keep the generation history across reloads (blob URLs die; data-URLs replay).
+  useEffect(() => {
+    persistHistory(historyJobs);
+  }, [historyJobs]);
+
   const handleDownloadWav = () => {
     if (!activeAudioUrl) return;
     const a = document.createElement('a');
@@ -279,8 +324,9 @@ export default function App() {
   };
 
   const handlePlayHistoricalJob = (job: SynthesisJob) => {
-    if (job.audioUrl) {
-      setActiveAudioUrl(job.audioUrl);
+    const source = job.audioDataUrl || job.audioUrl;
+    if (source) {
+      setActiveAudioUrl(source);
       setActiveDuration(job.audioDurationSeconds || 5.0);
       setActiveSampleRate(job.sampleRate || 24000);
       setSelectedLanguage(job.language);

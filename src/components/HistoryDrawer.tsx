@@ -107,7 +107,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                   )}
                 </div>
 
-                {job.audioUrl && (
+                {(job.audioDataUrl || job.audioUrl) && (
                   <div className="flex items-center gap-2">
                     <button
                       onClick={() => onPlayJob(job)}
@@ -117,7 +117,7 @@ export const HistoryDrawer: React.FC<HistoryDrawerProps> = ({
                       Play
                     </button>
                     <a
-                      href={job.audioUrl}
+                      href={job.audioDataUrl || job.audioUrl}
                       download={`voxindica_${job.voice.id}_${Date.now()}.wav`}
                       className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white transition-colors"
                       title="Download WAV"

@@ -367,7 +367,7 @@ export class ProviderService {
   public async executeJob(
     job: SynthesisJob,
     onProgress: (percent: number, status: string) => void
-  ): Promise<{ audioUrl: string; durationSeconds: number; latencyMs: number }> {
+  ): Promise<{ audioUrl: string; audioDataUrl?: string; durationSeconds: number; latencyMs: number }> {
     const startTime = performance.now();
     const config = this.providerConfigs[job.provider];
 
@@ -491,8 +491,18 @@ export class ProviderService {
     const audioUrl = URL.createObjectURL(audioBlob);
     const latencyMs = Math.round(performance.now() - startTime);
 
+    // Data-URL copy of the same audio: blob URLs die when the page reloads, so
+    // the persisted generation history can only replay from this copy.
+    let audioDataUrl: string | undefined;
+    try {
+      audioDataUrl = await blobToBase64(audioBlob);
+    } catch {
+      // History will still record the job metadata; only replay is lost.
+    }
+
     return {
       audioUrl,
+      audioDataUrl,
       durationSeconds,
       latencyMs
     };

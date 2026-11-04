@@ -445,23 +445,27 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
         />
       </div>
 
-      <div className="flex items-center justify-between gap-3 pt-1">
-        <div className="text-[11px] text-slate-500 flex items-center gap-1.5">
-          <StatusDot online={!!currentHealth?.online} checking={probing === selectedTab} />
-          {currentHealth
-            ? currentHealth.online
-              ? `Online · ${currentHealth.gpuDevice || 'device unknown'} · ${currentHealth.latencyMs ?? '—'}ms`
-              : currentHealth.errorMessage || 'Disconnected'
-            : 'Not checked yet'}
+      <div className="flex items-start justify-between gap-3 pt-1">
+        <div className="text-[11px] text-slate-500 flex items-start gap-1.5 flex-1 min-w-0 leading-relaxed">
+          <span className="shrink-0 mt-[3px]">
+            <StatusDot online={!!currentHealth?.online} checking={probing === selectedTab} />
+          </span>
+          <span className="min-w-0">
+            {currentHealth
+              ? currentHealth.online
+                ? `Online · ${currentHealth.gpuDevice || 'device unknown'} · ${currentHealth.latencyMs ?? '—'}ms`
+                : currentHealth.errorMessage || 'Disconnected'
+              : 'Not checked yet'}
+          </span>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 shrink-0">
           <button
             type="button"
             onClick={() => void handleTestConnection()}
             disabled={probing === selectedTab || !currentConfig.endpointUrl}
-            className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer disabled:opacity-50"
+            className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap transition-colors cursor-pointer disabled:opacity-50"
           >
-            <RefreshCw className={`w-3.5 h-3.5 ${probing === selectedTab ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 shrink-0 ${probing === selectedTab ? 'animate-spin' : ''}`} />
             {probing === selectedTab ? 'Probing /health…' : 'Test & Save'}
           </button>
           {selectedTab === 'kaggle' && (
@@ -469,7 +473,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
               type="button"
               onClick={() => void handleRefreshKaggleSession()}
               disabled={launch.phase === 'pushing' || launch.phase === 'queued' || launch.phase === 'running'}
-              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
+              className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 text-xs font-semibold flex items-center gap-1.5 whitespace-nowrap disabled:opacity-50 cursor-pointer"
             >
               <RefreshCw className="w-3 h-3 shrink-0" />
               Re-fetch from Kaggle

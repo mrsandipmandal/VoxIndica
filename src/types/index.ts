@@ -138,6 +138,8 @@ export interface SynthesisJob {
   status: JobStatus;
   progressPercent: number;
   audioUrl?: string;
+  /** Data-URL copy of the audio so history survives page reloads (blob URLs die). */
+  audioDataUrl?: string;
   audioDurationSeconds?: number;
   sampleRate: number;
   latencyMs?: number;
