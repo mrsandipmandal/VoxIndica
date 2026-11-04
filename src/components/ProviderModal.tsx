@@ -37,6 +37,7 @@ import { ProviderService } from '../services/providerService';
 import { detectLocalHardware, formatGpuLabel } from '../utils/hardware';
 import { WORKER_SCRIPTS, WorkerPlatform } from '../data/workerScripts';
 import { WorkerScriptModal } from './WorkerScriptModal';
+import { StopSessionButton } from './StopSessionButton';
 
 interface ProviderModalProps {
   isOpen: boolean;
@@ -304,15 +305,26 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
   };
 
   const applySession = (url: string, token: string) => {
-    const next = { ...configs.kaggle, endpointUrl: url, bearerToken: token };
+    // Read the latest config: a poll may have just stored kaggleSessionId.
+    const base = providerService.getConfig('kaggle');
+    const next = { ...base, endpointUrl: url, bearerToken: token };
     setConfigs((prev) => ({ ...prev, kaggle: next }));
     providerService.saveConfig(next);
     void runProbe('kaggle', url, token);
   };
 
+  const rememberKaggleSession = (sessionId?: string) => {
+    if (!sessionId) return;
+    const current = providerService.getConfig('kaggle');
+    if (current.kaggleSessionId === sessionId) return;
+    providerService.saveConfig({ ...current, kaggleSessionId: sessionId });
+    setConfigs(providerService.getAllConfigs());
+  };
+
   const pollKaggleSession = async (attempt: number) => {
     if (!isOpen) return;
     const result = await providerService.pollKaggleSession();
+    rememberKaggleSession(result.sessionId);
     const elapsed = Math.round((Date.now() - launchedAt.current) / 1000);
 
     if (result.state === 'connected' && result.url && result.token) {
@@ -357,6 +369,7 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
       message: result.message,
       kernelUrl: result.kernelUrl
     });
+    rememberKaggleSession(result.sessionId);
     pollTimer.current = window.setTimeout(() => void pollKaggleSession(1), 15000);
   };
 
@@ -464,6 +477,29 @@ export const ProviderModal: React.FC<ProviderModalProps> = ({
           )}
         </div>
       </div>
+
+      {(selectedTab === 'kaggle' || selectedTab === 'colab') && Boolean(currentConfig.endpointUrl) && (
+          <div className="pt-3 border-t border-slate-800/80">
+            <StopSessionButton
+              provider={selectedTab}
+              onStopped={(result) => {
+                setConfigs(providerService.getAllConfigs());
+                if (result.ok) {
+                  stopPolling();
+                  setLaunch({ phase: 'idle', message: '' });
+                  setHealth((prev) => ({
+                    ...prev,
+                    [selectedTab]: {
+                      online: false,
+                      checkedAt: new Date().toISOString(),
+                      errorMessage: 'Session stopped by the user'
+                    }
+                  }));
+                }
+              }}
+            />
+          </div>
+        )}
     </div>
   );
 

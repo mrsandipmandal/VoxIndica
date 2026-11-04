@@ -120,6 +120,8 @@ export interface ProviderEndpointConfig {
   vramUsedMb?: number;
   vramTotalMb?: number;
   statusMessage?: string;
+  /** Kaggle only: numeric version/session id from push or status; used to cancel the run. */
+  kaggleSessionId?: string;
 }
 
 export interface SynthesisJob {

@@ -102,6 +102,8 @@ inference hosts small TTS models; VoxCPM2-scale cloning needs an Inference Endpo
 | `POST /api/providers/kaggle/test` | Kaggle credential check over HTTP Basic |
 | `POST /api/providers/kaggle/launch` | multipart `/kernels/push` of the worker notebook |
 | `POST /api/providers/kaggle/poll` | `/kernels/status` + `/kernels/output` (zip parsed in-process) |
+| `POST /api/providers/kaggle/cancel` | `POST /kernels/cancel-session/{id}` — stops the GPU run |
+| `POST /api/providers/shutdown` | relays `POST /shutdown` to the worker (closes tunnel, exits) |
 | `GET /docs/*` | serves this repository's `docs/` folder |
 
 ### Worker (`workers/voxindica_worker_core.py`)
@@ -111,6 +113,7 @@ inference hosts small TTS models; VoxCPM2-scale cloning needs an Inference Endpo
 | `GET /health` | none | true GPU, VRAM, `model_loaded`, sample rate |
 | `POST /clone_voice` | `Authorization: Bearer <token>` | `{ text, reference_audio, language, cfg_value, inference_timesteps }` |
 | `POST /synthesize` | same | alias |
+| `POST /shutdown` | same | closes the tunnel and exits the process (`1.0.5+`; Studio **Stop session**) |
 
 Response: `audio_base64`, `sample_rate`, `duration_seconds`, `chunks`, `generation_seconds`, `gpu`.
 Failures are honest: **401** bad token, **422** bad reference audio, **503** model not loaded,

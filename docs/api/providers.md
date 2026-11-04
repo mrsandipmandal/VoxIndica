@@ -36,13 +36,14 @@ curl -s https://YOUR-TUNNEL.trycloudflare.com/health
 {
   "status": "online",
   "service": "voxindica-worker",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "platform": "kaggle",
   "model": "openbmb/VoxCPM2",
   "model_loaded": true,
   "model_error": null,
   "sample_rate": 24000,
   "auth_required": true,
+  "shutdown_supported": true,
   "gpu_device": "Tesla T4",
   "vram_used": 2210,
   "vram_total": 15360,
@@ -107,6 +108,24 @@ Errors are real, never masked:
 
 Long scripts are split on sentence boundaries (`VOXINDICA_CHUNK_CHARS`, default 800) and concatenated
 with 120 ms of silence.
+
+### `POST /shutdown` — bearer auth
+
+Stops the worker *and* its cloudflared tunnel. The Studio's **Stop session** button calls this (after
+cancelling the Kaggle run through the Kaggle API, when a session id is known).
+
+```bash
+curl -s -X POST https://YOUR-TUNNEL.trycloudflare.com/shutdown \
+  -H "Authorization: Bearer $WORKER_TOKEN"
+```
+
+```json
+{ "status": "shutting_down", "worker_version": "1.0.5", "message": "Worker is stopping; the tunnel closes in about a second." }
+```
+
+The response is sent first; the process terminates cloudflared and exits about a second later, so the
+tunnel URL stops working immediately afterwards. Workers older than **1.0.5** answer `404` — relaunch
+the notebook once to pick this up.
 
 ---
 

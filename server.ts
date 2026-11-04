@@ -445,6 +445,83 @@ app.post('/api/providers/probe', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
+// Worker shutdown relay.
+//
+// POST /shutdown is token-protected on the worker; the browser could call it
+// directly, but routing it here keeps the same honest error mapping as /probe.
+// The worker answers first, then terminates cloudflared and exits.
+// ---------------------------------------------------------------------------
+app.post('/api/providers/shutdown', async (req, res) => {
+  const raw = String(req.body?.url || '').trim().replace(/\/+$/, '');
+  const token = String(req.body?.token || '').trim();
+
+  if (!/^https?:\/\//i.test(raw)) {
+    return res.json({ ok: false, message: 'Worker URL must start with http:// or https://' });
+  }
+
+  let host = raw;
+  try {
+    host = new URL(raw).host;
+  } catch {
+    return res.json({ ok: false, message: `"${raw}" is not a valid URL` });
+  }
+
+  try {
+    const response = await fetch(`${raw}/shutdown`, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      signal: AbortSignal.timeout(12000),
+    });
+    const body = await response.text();
+
+    if (response.status === 404) {
+      return res.json({
+        ok: false,
+        unsupported: true,
+        message:
+          'This worker build has no /shutdown endpoint (v1.0.4 or older). Relaunch the notebook once, ' +
+          'or stop the session from the Kaggle/Colab page.',
+      });
+    }
+    if (!response.ok) {
+      return res.json({
+        ok: false,
+        status: response.status,
+        message:
+          response.status === 401
+            ? 'The worker rejected the saved bearer token, so it did not shut down.'
+            : `Worker answered HTTP ${response.status}: ${body.replace(/<[^>]*>/g, ' ').slice(0, 160)}`,
+      });
+    }
+
+    return res.json({
+      ok: true,
+      message: 'Worker acknowledged shutdown. The tunnel and the GPU session are closing.',
+    });
+  } catch (error: any) {
+    const code = error?.cause?.code || error?.code || '';
+    const name = error?.name || '';
+    // Exiting mid-response kills the tunnel, so a dropped connection here is
+    // consistent with a successful stop rather than a failure.
+    if (name === 'TimeoutError' || name === 'AbortError' || code === 'ECONNRESET' || code === 'UND_ERR_SOCKET') {
+      return res.json({
+        ok: true,
+        uncertain: true,
+        message: `The worker closed the connection while shutting down (${host}). That is expected — it should be gone.`,
+      });
+    }
+    return res.json({
+      ok: false,
+      code: code || null,
+      message: `Could not reach ${host} to stop it: ${error?.message || 'network error'}`,
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Kaggle API proxy — credentials arrive per request and are never persisted.
 //
 // Kaggle ships two credential generations:
@@ -612,6 +689,8 @@ interface KaggleKernelStatus {
   httpStatus: number;
   status: string;
   failureMessage?: string;
+  /** Kaggle's numeric session/version id, used by /kernels/cancel-session. */
+  sessionId?: string;
 }
 
 /**
@@ -639,11 +718,16 @@ async function fetchKernelStatus(credentials: KaggleCredentials): Promise<Kaggle
     }
   );
   if (!response.ok) return { httpStatus: response.status, status: '' };
-  const data = (await response.json()) as { status?: string; failureMessage?: string };
+  const data = (await response.json()) as Record<string, unknown>;
+  const rawSessionId = data.kernelSessionId ?? data.sessionId ?? data.versionNumber;
   return {
     httpStatus: response.status,
     status: String(data.status || ''),
-    failureMessage: data.failureMessage,
+    failureMessage: typeof data.failureMessage === 'string' ? data.failureMessage : undefined,
+    sessionId:
+      typeof rawSessionId === 'string' || typeof rawSessionId === 'number'
+        ? String(rawSessionId)
+        : undefined,
   };
 }
 
@@ -819,13 +903,123 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
       });
     }
 
+    let sessionId: string | undefined;
+    try {
+      const parsed = JSON.parse(body) as Record<string, unknown>;
+      // /kernels/push reports the run it just created as versionNumber; Kaggle's
+      // cancel-session endpoint accepts that numeric id.
+      const rawId = parsed.versionNumber ?? parsed.kernelSessionId ?? parsed.sessionId;
+      if (typeof rawId === 'string' || typeof rawId === 'number') sessionId = String(rawId);
+    } catch {
+      // Older responses are plain text; the poll route can still discover the id.
+    }
+
     return res.json({
       ok: true,
       message: 'Notebook pushed. Kaggle is queuing a GPU session — polling for the tunnel now.',
       kernelUrl,
+      sessionId,
     });
   } catch (error: any) {
     return res.json({ ok: false, message: `Kaggle push failed: ${error?.message || 'network error'}` });
+  }
+});
+
+app.post('/api/providers/kaggle/cancel', async (req, res) => {
+  const username = String(req.body?.username || '').trim();
+  const key = String(req.body?.key || '').trim();
+  const auth: KaggleAuthScheme = req.body?.auth === 'bearer' ? 'bearer' : 'basic';
+  let sessionId = String(req.body?.sessionId || '').trim();
+  const credentials: KaggleCredentials = { username, key, auth };
+
+  if (!username || !key) {
+    return res.json({ ok: false, message: 'Save and verify Kaggle credentials first.' });
+  }
+
+  // The id is not always known client-side (it was not parsed by older builds).
+  // Ask the status endpoint once before giving up.
+  if (!sessionId) {
+    try {
+      const status = await fetchKernelStatus(credentials);
+      sessionId = status.sessionId || '';
+    } catch {
+      // reported below
+    }
+  }
+
+  // Last resort for kernels pushed before versionNumber was captured: the v1
+  // kernels/list payload exposes `currentVersionNumber`, and per Kaggle's
+  // cancellation API the push-time `versionNumber` **is** the kernel session id.
+  if (!sessionId) {
+    try {
+      const listResponse = await kaggleRequest(
+        `/kernels/list?user=${encodeURIComponent(username)}&pageSize=50`,
+        credentials
+      );
+      if (listResponse.ok) {
+        const items: any[] = await listResponse.json();
+        const match = (Array.isArray(items) ? items : []).find((item) =>
+          String(item?.ref || '').endsWith(`/${KAGGLE_KERNEL_SLUG}`)
+        );
+        const version = Number(match?.currentVersionNumber);
+        if (Number.isFinite(version) && version > 0) sessionId = String(version);
+      }
+    } catch {
+      // reported below
+    }
+  }
+
+  if (!sessionId) {
+    return res.json({
+      ok: false,
+      message:
+        'Kaggle did not expose a session id for this run (kernels launched before this feature cannot be cancelled by id). ' +
+        'Press Launch on Kaggle once more — the re-push records the session id and the v1.0.5 worker adds its own /shutdown fallback. ' +
+        'Until then, stop the run from the kernel page on Kaggle (the running session keeps billing free hours).',
+    });
+  }
+
+  try {
+    const path = `/kernels/cancel-session/${encodeURIComponent(sessionId)}`;
+    const sendCancel = (body?: string) =>
+      kaggleRequest(path, credentials, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        ...(body ? { body } : {}),
+      });
+    // The SDK request carries no fields; some API builds reject a JSON body on
+    // this route, so retry once without one.
+    let response = await sendCancel('{}');
+    if (response.status === 400 || response.status === 422) {
+      response = await sendCancel();
+    }
+    const body = (await response.text()).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+
+    if (!response.ok) {
+      if (response.status === 404) {
+        return res.json({
+          ok: true,
+          sessionId,
+          message: `Kaggle has no running session ${sessionId}, so it is already stopped.`,
+        });
+      }
+      const detail =
+        response.status === 401 || response.status === 403
+          ? 'Kaggle rejected the credential for cancel-session. Verify & save a Legacy API Key (username + key from kaggle.json).'
+          : `Kaggle cancel-session failed (HTTP ${response.status})${body ? `: ${body.slice(0, 180)}` : ''}`;
+      return res.json({ ok: false, status: response.status, message: detail });
+    }
+
+    return res.json({
+      ok: true,
+      sessionId,
+      message: `Kaggle session ${sessionId} was cancelled. The GPU stops and free hours stop accruing.`,
+    });
+  } catch (error: any) {
+    return res.json({
+      ok: false,
+      message: `Could not reach Kaggle to cancel the session: ${error?.message || 'network error'}`,
+    });
   }
 });
 
@@ -896,6 +1090,7 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
         url: liveUrl,
         token: liveToken,
         kernelUrl,
+        sessionId: kernelStatus.sessionId,
       });
     }
 
@@ -910,6 +1105,7 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
           url: session.url,
           token: session.token,
           kernelUrl,
+          sessionId: kernelStatus.sessionId,
         });
       }
     }
@@ -928,6 +1124,7 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
           ? `Kernel is running — ${lastLogLine.slice(0, 200)}`
           : `Kernel is ${kernelStatus.status || 'RUNNING'}, but no tunnel URL has been printed yet.`,
       kernelUrl,
+      sessionId: kernelStatus.sessionId,
     });
   } catch (error: any) {
     return res.json({

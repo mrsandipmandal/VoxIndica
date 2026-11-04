@@ -24,6 +24,7 @@ import { TopNav } from './components/TopNav';
 import { WaveformPlayer } from './components/WaveformPlayer';
 import { VoiceCloneModal } from './components/VoiceCloneModal';
 import { ProviderModal } from './components/ProviderModal';
+import { StopSessionButton } from './components/StopSessionButton';
 import { BenchmarkModal } from './components/BenchmarkModal';
 import { HistoryDrawer } from './components/HistoryDrawer';
 import { ModelRegistryView } from './components/ModelRegistryView';
@@ -76,6 +77,8 @@ export default function App() {
   const [selectedVoiceId, setSelectedVoiceId] = useState<string>('voice-bn-arpita');
   const [selectedModelId, setSelectedModelId] = useState<string>('voxcpm-2');
   const [activeProvider, setActiveProvider] = useState<InferenceProvider>('local');
+  // Incremented after a session stop so the provider card re-reads the service.
+  const [, setProviderRevision] = useState(0);
   const [autoRoutingEnabled, setAutoRoutingEnabled] = useState<boolean>(false);
 
   // Script & Parameters
@@ -637,6 +640,13 @@ export default function App() {
                     </span>
                   </div>
                 </div>
+
+                {(activeProvider === 'kaggle' || activeProvider === 'colab') && providerConfig.endpointUrl && (
+                  <StopSessionButton
+                    provider={activeProvider}
+                    onStopped={() => setProviderRevision((value) => value + 1)}
+                  />
+                )}
 
                 {/* Explicit Auto-Routing Checkbox */}
                 <div className="pt-2 border-t border-slate-800/80">

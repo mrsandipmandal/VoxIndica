@@ -39,7 +39,7 @@ import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-WORKER_VERSION = "1.0.4"
+WORKER_VERSION = "1.0.5"
 DEFAULT_MODEL_ID = "openbmb/VoxCPM2"
 DEFAULT_SAMPLE_RATE = 24000
 DEFAULT_CFG_VALUE = 2.0
@@ -57,11 +57,40 @@ MAX_REFERENCE_SECONDS = 60.0
 SESSION_FILE = "worker_session.json"
 _LOG_LOCK = threading.Lock()
 
+# cloudflared is a child of this process; POST /shutdown needs a handle to it so
+# the tunnel closes before the interpreter exits. Left running, the tunnel (and
+# therefore a reachable-looking URL) would outlive the kernel.
+_ACTIVE_TUNNEL: Optional["subprocess.Popen[Any]"] = None
+_SHUTDOWN_GRACE_SECONDS = 1.2
+
 
 def log(message: str) -> None:
     """Thread-safe print that also flushes (notebooks buffer otherwise)."""
     with _LOG_LOCK:
         print(message, flush=True)
+
+
+def _exit_process(code: int = 0) -> None:
+    """Hard-exit seam, kept separate so tests can stub it."""
+    os._exit(code)
+
+
+def _shutdown_worker(tunnel_process: Optional["subprocess.Popen[Any]"], grace: float) -> None:
+    """Close the tunnel, then exit the interpreter.
+
+    The short sleep lets the HTTP response travel back through the tunnel before
+    the tunnel is torn down. cloudflared must not outlive this process: a live
+    quick tunnel would otherwise keep pointing at a dead worker.
+    """
+    time.sleep(grace)
+    if tunnel_process is not None and tunnel_process.poll() is None:
+        try:
+            tunnel_process.terminate()
+            tunnel_process.wait(timeout=5)
+        except Exception:  # noqa: BLE001 - best effort on the way out
+            pass
+    log("[voxindica] worker stopped by the Studio")
+    _exit_process(0)
 
 
 def detect_platform() -> str:
@@ -525,8 +554,24 @@ def build_app(
             "model_error": runtime.get("error"),
             "sample_rate": model_sample_rate(active) if active is not None else None,
             "auth_required": bool(token),
+            "shutdown_supported": True,
             "timestamp": time.time(),
             **gpu,
+        }
+
+    @app.post("/shutdown")
+    def shutdown(_: None = Depends(require_token)) -> Dict[str, Any]:
+        """Stop this worker (and its tunnel) at the Studio's request."""
+        log("[voxindica] shutdown requested by the Studio")
+        threading.Thread(
+            target=_shutdown_worker,
+            args=(_ACTIVE_TUNNEL, _SHUTDOWN_GRACE_SECONDS),
+            daemon=True,
+        ).start()
+        return {
+            "status": "shutting_down",
+            "worker_version": WORKER_VERSION,
+            "message": "Worker is stopping; the tunnel closes in about a second.",
         }
 
     @app.post("/clone_voice")
@@ -632,6 +677,8 @@ def serve(
     ready_timeout: int = 60,
 ) -> Dict[str, Any]:
     """Load the model, start uvicorn (+ optional tunnel) and announce the session."""
+    global _ACTIVE_TUNNEL
+
     platform_name = platform_name or detect_platform()
     token = token or os.environ.get("VOXINDICA_WORKER_TOKEN") or secrets.token_hex(16)
     model_error: Optional[str] = None
@@ -683,6 +730,8 @@ def serve(
         public_url, tunnel_process, tunnel_error = start_tunnel(port, wait_seconds=wait_seconds)
         if public_url:
             _keep_announcing_tunnel(public_url)
+
+    _ACTIVE_TUNNEL = tunnel_process
 
     session_path = write_session(
         platform_name,

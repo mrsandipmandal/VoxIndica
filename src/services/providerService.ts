@@ -686,6 +686,7 @@ export class ProviderService {
     ok: boolean;
     message: string;
     kernelUrl?: string;
+    sessionId?: string;
   }> {
     const credentials = this.getKaggleCredentials();
     if (!credentials) {
@@ -698,7 +699,12 @@ export class ProviderService {
         body: JSON.stringify({ ...credentials, datasetSource })
       });
       const data = await response.json();
-      return { ok: Boolean(data.ok), message: data.message || 'Launch request sent', kernelUrl: data.kernelUrl };
+      return {
+        ok: Boolean(data.ok),
+        message: data.message || 'Launch request sent',
+        kernelUrl: data.kernelUrl,
+        sessionId: data.sessionId
+      };
     } catch (error) {
       return {
         ok: false,
@@ -713,6 +719,7 @@ export class ProviderService {
     url?: string;
     token?: string;
     kernelUrl?: string;
+    sessionId?: string;
   }> {
     const credentials = this.getKaggleCredentials();
     if (!credentials) {
@@ -730,7 +737,8 @@ export class ProviderService {
         message: data.message || '',
         url: data.url,
         token: data.token,
-        kernelUrl: data.kernelUrl
+        kernelUrl: data.kernelUrl,
+        sessionId: data.sessionId
       };
     } catch (error) {
       return {
@@ -738,6 +746,101 @@ export class ProviderService {
         message: `Polling failed: ${error instanceof Error ? error.message : 'network error'}`
       };
     }
+  }
+
+  /** Cancel a Kaggle run by its session/version id. Stops GPU billing immediately. */
+  public async cancelKaggleSession(sessionId: string): Promise<{ ok: boolean; message: string }> {
+    const credentials = this.getKaggleCredentials();
+    if (!credentials) {
+      return { ok: false, message: 'Kaggle credentials are missing.' };
+    }
+    try {
+      const response = await fetch('/api/providers/kaggle/cancel', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ...credentials, sessionId })
+      });
+      const data = await response.json();
+      return { ok: Boolean(data.ok), message: data.message || 'No response detail' };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Cancel failed: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
+
+  /** Ask a running worker (v1.0.5+) to close its tunnel and exit. */
+  public async shutdownWorker(provider: InferenceProvider): Promise<{ ok: boolean; message: string }> {
+    const config = this.providerConfigs[provider];
+    if (!config.endpointUrl) {
+      return { ok: false, message: 'No worker URL is saved for this provider.' };
+    }
+    try {
+      const response = await fetch('/api/providers/shutdown', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url: config.endpointUrl, token: config.bearerToken })
+      });
+      const data = await response.json();
+      return { ok: Boolean(data.ok), message: data.message || 'No response detail' };
+    } catch (error) {
+      return {
+        ok: false,
+        message: `Stop failed: ${error instanceof Error ? error.message : 'network error'}`
+      };
+    }
+  }
+
+  /**
+   * Stop a hosted session without leaving the Studio.
+   *
+   * Kaggle is cancelled through its API first (works even on a worker build that
+   * predates /shutdown). The worker-side shutdown is the fallback, and the only
+   * path for Colab.
+   */
+  public async stopSession(provider: InferenceProvider): Promise<{ ok: boolean; message: string }> {
+    const config = this.providerConfigs[provider];
+    const failures: string[] = [];
+
+    if (provider === 'kaggle') {
+      // Even without a stored id the server asks Kaggle's status endpoint for
+      // one, so a session launched before this feature can still be cancelled.
+      const cancelled = await this.cancelKaggleSession(config.kaggleSessionId || '');
+      if (cancelled.ok) {
+        this.markStopped(provider, cancelled.message);
+        return { ok: true, message: cancelled.message };
+      }
+      failures.push(cancelled.message);
+    }
+
+    const shutdown = await this.shutdownWorker(provider);
+    if (shutdown.ok) {
+      const message = `${shutdown.message} GPU hours stop accruing now.`;
+      this.markStopped(provider, message);
+      return { ok: true, message };
+    }
+    failures.push(shutdown.message);
+
+    return {
+      ok: false,
+      message: failures.filter(Boolean).join(' ')
+    };
+  }
+
+  /** Record that a session is gone; keeps the URL/token for audit but never reuses it. */
+  private markStopped(provider: InferenceProvider, message: string): void {
+    const config: ProviderEndpointConfig = {
+      ...this.providerConfigs[provider],
+      isConnected: false,
+      latencyMs: undefined,
+      gpuDeviceName: undefined,
+      vramUsedMb: undefined,
+      vramTotalMb: undefined,
+      kaggleSessionId: undefined,
+      statusMessage: message
+    };
+    this.saveConfig(config);
   }
 }
 
