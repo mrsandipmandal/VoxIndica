@@ -1,10 +1,10 @@
 import React from 'react';
-import { Radio, Server, Activity, Volume2, Sparkles, Database, Clapperboard } from 'lucide-react';
+import { Radio, Server, Activity, Volume2, Sparkles, Database, Clapperboard, Layers } from 'lucide-react';
 import { InferenceProvider, ProviderEndpointConfig } from '../types';
 
 interface TopNavProps {
-  activeTab: 'studio' | 'creator' | 'models' | 'benchmarks' | 'history';
-  setActiveTab: (tab: 'studio' | 'creator' | 'models' | 'benchmarks' | 'history') => void;
+  activeTab: 'studio' | 'creator' | 'batch' | 'models' | 'benchmarks' | 'history';
+  setActiveTab: (tab: 'studio' | 'creator' | 'batch' | 'models' | 'benchmarks' | 'history') => void;
   activeProvider: InferenceProvider;
   providerConfig: ProviderEndpointConfig;
   onOpenProviderModal: () => void;
@@ -63,6 +63,18 @@ export const TopNav: React.FC<TopNavProps> = ({
         >
           <Clapperboard className="w-3.5 h-3.5" />
           Creator Studio
+        </button>
+
+        <button
+          onClick={() => setActiveTab('batch')}
+          className={`transition-colors whitespace-nowrap shrink-0 py-1 border-b-2 flex items-center gap-1.5 ${
+            activeTab === 'batch'
+              ? 'text-amber-400 border-amber-400 font-semibold'
+              : 'text-slate-400 hover:text-slate-200 border-transparent'
+          }`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          Batch
         </button>
 
         <button

@@ -34,6 +34,7 @@ const createBatchSchema = z.object({
   workerToken: z.string().optional(),
   language: z.enum(SUPPORTED_LANGUAGES),
   isCloned: z.boolean().default(false),
+  consentConfirmed: z.boolean().default(false),
   referenceAudioBase64: z.string().optional(),
   promptText: z.string().max(4000).optional(),
   items: z.array(batchItemSchema).min(1).max(32),
@@ -97,6 +98,12 @@ export function registerBatchRoutes(app: Express, options: BatchRouteOptions): v
       if (input.isCloned && !input.referenceAudioBase64) {
         response.status(400).json({
           error: 'Voice cloning requires reference audio (3-30s, 16-bit PCM WAV).',
+        });
+        return;
+      }
+      if (input.isCloned && !input.consentConfirmed) {
+        response.status(400).json({
+          error: 'Voice cloning requires explicit presenter consent.',
         });
         return;
       }

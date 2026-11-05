@@ -199,11 +199,21 @@ Creation body:
   "workerToken": "optional",
   "language": "bn-IN",
   "isCloned": false,
+  "consentConfirmed": false,
   "referenceAudioBase64": "optional for cloned voices",
   "promptText": "optional",
   "items": [{"id": "intro-0001", "text": "নমস্কার।"}]
 }
 ```
+
+When `isCloned` is `true`, the request must include reference audio and `consentConfirmed: true`.
+The server rejects cloning with `400` if either is missing, so the consent gate cannot be bypassed by a
+custom client.
+
+The Studio's **Batch** tab drives this API directly. It prepares an uploaded 3–30s clip as 16-bit mono WAV
+in the browser, requires the presenter-consent checkbox before dispatch, shows only persisted job state,
+polls while the job is queued/running, and exposes cancel plus per-item WAV playback/download. It never
+invents progress, audio, or completion.
 
 The Studio starts a **dedicated loopback callback listener** (default `127.0.0.1:3099`) that exposes
 only `GET /healthz` and the signed webhook. A local worker can reach it directly. Kaggle/Colab cannot

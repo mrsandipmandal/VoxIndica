@@ -32,6 +32,8 @@ export interface CreateBatchInput {
   workerToken?: string;
   language: SupportedLanguage;
   isCloned: boolean;
+  /** Required when `isCloned` is true; the route rejects cloning without it. */
+  consentConfirmed?: boolean;
   referenceAudioBase64?: string;
   promptText?: string;
   items: BatchItemInput[];

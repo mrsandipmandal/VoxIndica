@@ -43,6 +43,7 @@
 - [x] Desktop Phase 2 scaffold — Tauri v2 shell, loopback Node SEA sidecar, bundled dist/docs/notebooks, app-data projects, honest desktop error page, and CI build matrix
 - [ ] Desktop installer verification — GitHub Actions builds Linux deb/AppImage, Windows NSIS/MSI, and the Apple Silicon macOS DMG; each installer still needs a manual install/launch check (local compile blocked by missing WebKitGTK dev libraries; Intel macOS is not claimed by Node SEA)
 - [x] Phase 3 batch webhooks — durable Studio batch jobs, HMAC-signed worker callbacks, dedicated loopback callback listener, real WAV storage, cancel/status/audio routes, and honest `503` when a remote worker lacks `VOXINDICA_PUBLIC_URL`
+- [x] Batch inference console — `Batch` tab, persisted job list/detail, real terminal progress, cancel, WAV playback/download, 3–30s reference preparation and explicit consent gate
 - [x] Creator Studio Phase 0 — project store, zod contracts, `/api/creator/*` routes, ZIP export
 - [x] Creator Studio Phase 1 — Gemini → Groq → OpenRouter fallback, validated script, Creator Studio UI
 - [x] Creator Studio Phase 4.3 — checkpointed per-scene voice stage with real progress, cancel and restart recovery
@@ -91,6 +92,8 @@
 - Worker callbacks use `X-VoxIndica-Timestamp` + `X-VoxIndica-Signature: sha256=HMAC(secret, timestamp + "." + rawBody)`, a ±5-minute window, and a random token in the URL. Secrets and tokens never appear in API responses.
 - The callback listener binds `127.0.0.1:3099` (`VOXINDICA_CALLBACK_PORT`) and exposes only `/healthz` and the webhook. Local workers call it directly; Kaggle/Colab require a user-provided tunnel and `VOXINDICA_PUBLIC_URL`. No tunnel is opened automatically.
 - Restart recovery marks queued/running jobs `interrupted` and keeps completed audio; a later valid callback may still finish the job.
+- `src/components/BatchStudio.tsx` + `src/services/batchService.ts` expose a `Batch` tab: provider/language/worker form, one line per item, persisted job list/detail, terminal-only progress, cancel, per-item WAV playback/download, and polling that stops on terminal states.
+- Cloning a voice in the batch console requires a 3–30s reference clip prepared as 16-bit mono WAV and an explicit presenter-consent checkbox; the server rejects `isCloned` without `consentConfirmed` even if the UI is bypassed.
 
 ### Honest limitations (documented, not hidden)
 - Consumer Google Colab has no runtime API and no official CLI — browser Run-all only (or Colab Enterprise on Vertex AI).
@@ -99,8 +102,8 @@
 - Kaggle GPU sessions stop after ~12 hours; Colab frees idle runtimes. The Studio reports `Disconnected`, never a fabricated countdown.
 
 ### Verification status
-- Verified: `npx tsc --noEmit` (clean), `npm run build` (vite, 423 kB bundle), `curl` smoke test of `/docs`, `/notebooks/*.ipynb`, `/api/providers/kaggle/test`, and FastAPI TestClient runs of `/clone_voice` (200 with audio, 401 without token, 500 on model exception, 503 when the model is absent).
-- Verified: `scripts/test/batch_webhook.mjs` starts the real Studio with a fake worker and checks signed item/batch callbacks, persisted completion, WAV download, duplicate idempotency, and unsigned rejection. `scripts/test/worker_smoke.py` now also checks `/batch` 202, HMAC signatures, item audio, duplicate id and missing-model `503`.
+- Verified: `npx tsc --noEmit` (clean), `npm run build` (vite, 601 kB bundle), `curl` smoke test of `/docs`, `/notebooks/*.ipynb`, `/api/providers/kaggle/test`, and FastAPI TestClient runs of `/clone_voice` (200 with audio, 401 without token, 500 on model exception, 503 when the model is absent).
+- Verified: `scripts/test/batch_webhook.mjs` starts the real Studio with a fake worker and checks consent rejection, signed item/batch callbacks, persisted completion, WAV download, duplicate idempotency, and unsigned rejection. `scripts/test/worker_smoke.py` now also checks `/batch` 202, HMAC signatures, item audio, duplicate id and missing-model `503`.
 - Not verified here: live Kaggle API calls (no account credentials in this environment), real VoxCPM2 inference (no GPU, no `voxcpm` package installed; local Python is 3.14, torch wheels target 3.10–3.12), and a remote Kaggle/Colab callback through a real public tunnel.
 
 ## Creator Studio (Phase 1, branch `feat/creator-studio`)

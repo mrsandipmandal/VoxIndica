@@ -28,6 +28,12 @@
   - Worker adds `/batch`, `/batch/{id}` and `/batch/{id}/cancel`, signs item/batch events, retries delivery, and serializes model access with interactive synthesis.
   - Verified by `scripts/test/batch_webhook.mjs` (real Studio + fake worker + signed callbacks) and the extended `scripts/test/worker_smoke.py` batch contract checks.
 
+#### Phase 3.1 — Batch inference console (Completed)
+- [x] New `Batch` tab with provider/language/worker form, one-line-per-item script input, 32-item and 100,000-character limits mirrored from the server.
+- [x] Optional 3–30s reference clip prepared as 16-bit mono WAV in the browser; voice cloning is blocked until the creator confirms explicit presenter consent, and the server also rejects cloning without `consentConfirmed`.
+- [x] Real persisted job list, selected-job detail, cancel, per-item WAV playback/download, and polling that stops on terminal or unmounted jobs.
+- [x] No synthetic progress, placeholder audio or optimistic completion; every displayed state comes from the stored job and signed worker callbacks.
+
 ### Phase 4: AI Creator Studio
 #### Phase 4.0 — Project workspace (Completed)
 - [x] `CreatorProject`/`ScriptDocument` types, zod contracts, UUID project store under `data/projects/`.

@@ -19,6 +19,8 @@ pretending to be a model result.
 - **Batch inference with signed webhooks** — submit up to 32 items, get a `202` immediately, and receive
   HMAC-SHA256 callbacks per item. Jobs and real WAV results are persisted; remote Kaggle/Colab workers need
   an explicit public callback tunnel, and the Studio returns `503` instead of pretending callbacks work.
+- **Batch console** — a `Batch` tab drives the same API with a real persisted job list, terminal-state polling,
+  cancellation, per-item WAV playback/download, and a 3–30s reference clip with mandatory presenter consent.
 - **Provider layer** — API-first; CLI commands are optional and documented separately.
   | Provider | What it does |
   |---|---|

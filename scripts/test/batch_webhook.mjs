@@ -251,6 +251,21 @@ async function main() {
       }
     }, 10000, 'Studio /healthz');
 
+    const missingConsent = await fetch(`http://127.0.0.1:${port}/api/providers/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'local',
+        workerUrl: worker.url,
+        language: 'bn-IN',
+        isCloned: true,
+        referenceAudioBase64: `data:audio/wav;base64,${wavBytes().toString('base64')}`,
+        items: [{ id: 'item-0000', text: 'consent check' }],
+      }),
+    });
+    assert.equal(missingConsent.status, 400, 'cloning without consent must be rejected');
+    assert.match((await missingConsent.json()).error, /consent/i);
+
     const create = await fetch(`http://127.0.0.1:${port}/api/providers/batch`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
