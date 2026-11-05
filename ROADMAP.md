@@ -49,6 +49,7 @@
 #### Phase 4.4 — Presenter and video (Scene renderer completed)
 - [x] Async, scene-checkpointed renderer with resumable jobs and FFmpeg assembly.
 - [x] 1280×720 / 30 fps H.264 + AAC output from uploaded scene visuals and synthesized narration.
+- [x] Landscape 1280×720, portrait 720×1280 and square 960×960 presets; dimension-aware clip reuse and ASS sizing.
 - [x] Reuse only matching audio/visual fingerprints; real progress, cancel, restart recovery.
 - [x] Honest failure states; no placeholder video.
 - [ ] Presenter/avatar stage gated by `consent.json` and the T4 spike result.
@@ -59,3 +60,9 @@
 - [x] Publishing pack export (description, tags, hashtags, real-timing chapters, disclosure, sources).
 - [x] Thumbnail upload with prompt copy and approval-by-upload workflow.
 - [x] AI thumbnail generation with Gemini behind explicit approval (needs `GEMINI_API_KEY`).
+
+#### Phase 4.8 — Render format presets (Completed)
+- [x] Landscape 1280×720, portrait 720×1280 and square 960×960 output.
+- [x] Scene clips re-encoded when the preset changes; clips from another size are never reused.
+- [x] ASS `PlayRes`, font size and margins follow the last completed render.
+- [x] Preset selector in the render panel with honest re-render semantics.

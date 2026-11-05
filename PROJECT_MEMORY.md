@@ -46,6 +46,7 @@
 - [x] Creator Studio Phase 4.4 — checkpointed FFmpeg scene renderer (uploaded visuals + narration → 1280×720 MP4)
 - [x] Creator Studio Phase 4.5 — SRT/ASS captions from real narration durations, burned-in caption render, publishing pack with computed chapters, approved-thumbnail upload
 - [x] Creator Studio Phase 4.7 — approval-gated Gemini thumbnail generation (live generation needs GEMINI_API_KEY); assets are written only after the creator approves
+- [x] Creator Studio Phase 4.8 — landscape, portrait and square render presets with dimension-aware clip reuse and ASS sizing
 - [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
 - [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
 - [ ] End-to-End Test Suite Verification (Stage 5)
@@ -126,9 +127,9 @@
 - `VoicePanel.tsx`: provider picker from the Studio's stored worker configs, reference upload/select, optional transcript, progress bar, cancel, per-scene players and regenerate.
 
 ### Render stage
-- `src/server/creator/render.ts`: asynchronous FFmpeg renderer for uploaded scene visuals plus the synthesized scene narration. Output is 1280×720, 30 fps, H.264 + AAC, `+faststart`.
-- Requires a saved script, narration for every scene and a `scene_visual` asset for every scene. Missing items fail with real counts; a running job returns 409; an already-finished render returns 409 until a visual or narration changes.
-- Per-scene clips are written to `data/projects/<uuid>/render/scene-NN.mp4` and checkpointed in `render.scenes[sceneId]`. A clip is reused on resume only when its stored narration and visual asset ids match and the file exists.
+- `src/server/creator/render.ts`: asynchronous FFmpeg renderer for uploaded scene visuals plus the synthesized scene narration. Output presets are landscape 1280×720 (default), portrait 720×1280 and square 960×960 at 30 fps, H.264 + AAC, `+faststart`.
+- Requires a saved script, narration for every scene and a `scene_visual` asset for every scene. Missing items fail with real counts; a running job returns 409; an already-finished render returns 409 only when the requested preset and caption flag match the finished render.
+- Per-scene clips are written to `data/projects/<uuid>/render/scene-NN.mp4` and checkpointed in `render.scenes[sceneId]`. A clip is reused on resume only when its stored narration and visual asset ids match, the file exists, and the clip was encoded at the same width and height.
 - `render.progress` and `completedScenes` reflect real stored clips. Only a completed, probed assembly sets project status `ready` and attaches a `final_video` asset.
 - Cancel aborts the ffmpeg child, waits on the job's `done` promise, then records `cancelled`; this closed a real race where an immediate resume saw a stale running job and got 409. Finished clips are kept.
 - Failure/cancel never produces a placeholder video; errors carry the last ffmpeg stderr lines. `ffmpeg`/`ffprobe` must be on `PATH`.
@@ -139,7 +140,7 @@
 ### Captions and publishing
 - `src/server/creator/publish.ts`: `collectCues` derives one cue per scene from stored narration; SRT, ASS and the markdown publishing pack all share those timings.
 - Captions require a saved script and a WAV for every scene; otherwise `400` with the real missing count. Cue text is the scene subtitle (fallback voiceText); timestamps accumulate real `durationSeconds`.
-- ASS export (`?format=ass`) uses a 1280×720 style, language-appropriate Noto/DejaVu font, bottom-center outline and the same cues as the SRT.
+- ASS export (`?format=ass`) uses the last completed render's dimensions and a language-appropriate Noto/DejaVu font, bottom-center outline and the same cues as the SRT. It defaults to 1280×720 before the first render.
 - Publishing pack includes title, description, tags, hashtags, chapters, thumbnail prompt, disclosure and sources. Chapters use real cumulative audio timings; incomplete narration prints an explicit pending note instead of estimated timestamps.
 - Thumbnails use the asset route with `kind: "thumbnail"`; the UI shows the current image and lets the creator copy or edit the prompt.
 - `src/server/creator/thumbnail.ts` can propose a thumbnail with Gemini (`GEMINI_IMAGE_MODEL`, default `gemini-2.5-flash-image`). The image is returned in memory only; it becomes an asset only after the creator clicks `Use image`, which uploads it with `generatedBy`. Discard writes nothing. Without `GEMINI_API_KEY` the route returns an honest 503 and the upload path still works.
@@ -165,6 +166,8 @@
 - Render cancel: 6 scenes, cancel 0.4s after start → `cancelled`, 1 clip kept, `running:false`; immediate resume → `Resuming: 1 of 6 scene clips already exist.` → complete 12.62s.
 - Render recovery: 8 scenes, killed the server after 2 clips, restart → `interrupted`, 2 clips kept, rest `pending`, no final asset; resume → complete 17.78s.
 - Render UI (Playwright): `Scene render` → `Render video` → `Video ready`; `<video>` streams the final asset; screenshot reviewed with readiness counters, blue/green thumbnails, 100% progress bar and download link.
+- Render presets: portrait render completed at 720×1280 (ffprobe 1.97s) and square at 960×960, both with burned-in captions; `?format=ass` after the square render reported `PlayResX: 960` / `PlayResY: 960`; same-format re-render returned 409 and switching back to landscape re-rendered at 1280×720. A portrait frame was extracted and reviewed — the 16:9 source was letterboxed, not stretched, and the caption sat at the bottom.
+- Preset UI (Playwright): the `Output format` select lists all three presets, selecting portrait shows `720×1280`, and `Render video` stays enabled for a new format; square shows `960×960`. Screenshot reviewed.
 - Captions E2E with the fake worker: request before narration → `400` / `2 missing`; after synthesis the SRT cues start at `00:00:00,000`, `00:00:01,110`, `00:00:02,220` and fall back to `voiceText` when a subtitle is empty.
 - Publishing pack: chapters `00:00 — Opening`, `00:01 — Scene 2` from real audio timings; includes source, disclosure and `SRT available: 2 cues`; ZIP contains the SRT, publishing markdown and `assets/thumbnail.png`.
 - Publishing UI (Playwright): `Publishing package` panel, SRT and pack links, prompt text, caption/chapter notes; uploaded PNG shows `Thumbnail saved`. Screenshot reviewed.
