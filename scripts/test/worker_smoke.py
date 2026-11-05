@@ -10,11 +10,17 @@ WAV encoding, chunking and the honest error codes — not model quality.
 from __future__ import annotations
 
 import base64
+import hashlib
+import hmac
 import io
+import json
 import os
 import sys
 import tempfile
+import threading
+import time
 import wave
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +56,15 @@ def write_reference() -> str:
         handle.setframerate(16000)
         handle.writeframes(np.zeros(48000, dtype="<i2").tobytes())
     return path
+
+
+def wait_until(predicate, timeout: float = 10.0) -> bool:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 class FakeTtsModel:
@@ -135,6 +150,113 @@ def main() -> int:
     missing = unloaded.post("/clone_voice", json={"text": "x"}, headers={"Authorization": f"Bearer {TOKEN}"})
     check("missing model is HTTP 503, never synthetic audio", missing.status_code == 503)
     check("missing model reports degraded health", unloaded.get("/health").json()["status"] == "degraded")
+
+    # --- batch webhooks -------------------------------------------------
+    received: list[dict] = []
+    signature_results: list[bool] = []
+    callback_secret = "batch-test-secret-0123456789abcdef"
+
+    class CallbackHandler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            timestamp = self.headers.get("X-VoxIndica-Timestamp", "")
+            expected = "sha256=" + hmac.new(
+                callback_secret.encode("utf-8"),
+                timestamp.encode("utf-8") + b"." + body,
+                hashlib.sha256,
+            ).hexdigest()
+            signature_results.append(
+                hmac.compare_digest(expected, self.headers.get("X-VoxIndica-Signature", ""))
+            )
+            received.append(json.loads(body))
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(b'{"ok":true}')
+
+        def log_message(self, *_args) -> None:
+            return
+
+    sink = ThreadingHTTPServer(("127.0.0.1", 0), CallbackHandler)
+    threading.Thread(target=sink.serve_forever, daemon=True).start()
+
+    batch_client = TestClient(
+        core.build_app(
+            model=FakeModel(),
+            token=TOKEN,
+            platform_name="local",
+            default_reference=reference,
+        )
+    )
+    batch_headers = {"Authorization": f"Bearer {TOKEN}"}
+    batch_payload = {
+        "batch_id": "test-batch-0001",
+        "items": [
+            {"id": "item-1", "text": "প্রথম বাক্য।", "language": "bn-IN"},
+            {"id": "item-2", "text": "দ্বিতীয় বাক্য।", "language": "bn-IN"},
+        ],
+        "callback_url": f"http://127.0.0.1:{sink.server_port}/api/providers/batch/webhook/test-token",
+        "callback_secret": callback_secret,
+    }
+
+    unauthorized = batch_client.post("/batch", json={**batch_payload, "batch_id": "test-batch-0000"})
+    check("batch requires the worker token", unauthorized.status_code == 401)
+
+    invalid_callback = batch_client.post(
+        "/batch",
+        json={**batch_payload, "batch_id": "test-batch-0002", "callback_url": "ftp://example.com/hook"},
+        headers=batch_headers,
+    )
+    check("batch rejects a non-HTTP callback URL", invalid_callback.status_code == 422)
+
+    accepted = batch_client.post("/batch", json=batch_payload, headers=batch_headers)
+    accepted_body = accepted.json()
+    check("batch returns 202", accepted.status_code == 202, str(accepted_body))
+    check("batch echoes the batch id", accepted_body.get("batch_id") == "test-batch-0001")
+    check("batch reports its item count", accepted_body.get("total") == 2)
+
+    delivered = wait_until(
+        lambda: any(event.get("event") == "batch.completed" for event in received)
+    )
+    check("batch callbacks are delivered", delivered, str(received)[:300])
+    check(
+        "every callback signature is valid",
+        bool(signature_results) and all(signature_results),
+        str(signature_results),
+    )
+
+    snapshot = batch_client.get("/batch/test-batch-0001", headers=batch_headers).json()
+    check("batch reaches completed", snapshot.get("status") == "completed", str(snapshot))
+    check(
+        "batch counts both completed items",
+        snapshot.get("completed") == 2 and snapshot.get("failed") == 0,
+        str(snapshot),
+    )
+    check(
+        "batch item states are terminal",
+        all(item.get("status") == "completed" for item in snapshot.get("items", [])),
+        str(snapshot),
+    )
+
+    completed_events = [event for event in received if event.get("event") == "item.completed"]
+    check("both item.completed callbacks carry audio", len(completed_events) == 2, str(received))
+    if completed_events:
+        audio = base64.b64decode(completed_events[0].get("audio_base64", ""))
+        check(
+            "callback audio is a RIFF/WAVE file",
+            audio[:4] == b"RIFF" and audio[8:12] == b"WAVE",
+        )
+        check("callback audio reports the model sample rate", completed_events[0].get("sample_rate") == 24000)
+
+    duplicate = batch_client.post("/batch", json=batch_payload, headers=batch_headers)
+    check("a duplicate batch id is rejected", duplicate.status_code == 409)
+
+    missing_batch = unloaded.post("/batch", json=batch_payload, headers=batch_headers)
+    check("a worker without a model rejects batch with 503", missing_batch.status_code == 503)
+
+    sink.shutdown()
+    sink.server_close()
 
     print()
     if FAILURES:

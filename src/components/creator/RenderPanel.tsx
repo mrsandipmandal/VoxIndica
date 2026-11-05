@@ -5,6 +5,7 @@ import {
   Download,
   Film,
   Loader2,
+  Music2,
   Play,
   RefreshCw,
   Square,
@@ -64,16 +65,31 @@ export function RenderPanel({
   const [preset, setPreset] = useState<RenderPreset>(
     project.render?.preset ?? 'landscape'
   );
+  const [musicAssetId, setMusicAssetId] = useState<string | null>(
+    project.render?.audio?.musicAssetId ?? null
+  );
+  const [musicVolume, setMusicVolume] = useState(
+    project.render?.audio?.musicVolume ?? 0.2
+  );
+  const [normalizeAudio, setNormalizeAudio] = useState(
+    project.render?.audio?.normalizeAudio ?? true
+  );
+  const [uploadingMusic, setUploadingMusic] = useState(false);
 
   const scenes = project.script?.scenes ?? [];
   const render = project.render;
+  const musicAssets = project.assets.filter((asset) => asset.kind === 'music_bed');
+  const selectedMusic = musicAssets.find((asset) => asset.id === musicAssetId) ?? null;
   const running = render?.status === 'queued' || render?.status === 'running';
   const complete = render?.status === 'complete';
   const dimensions = RENDER_PRESET_DIMENSIONS[preset];
   const formatChanged =
     !render ||
     render.preset !== preset ||
-    render.burnCaptions !== burnCaptions;
+    render.burnCaptions !== burnCaptions ||
+    render.audio.musicAssetId !== musicAssetId ||
+    Math.abs(render.audio.musicVolume - musicVolume) > 0.0005 ||
+    render.audio.normalizeAudio !== normalizeAudio;
   const finalAsset = useMemo(() => {
     const byId = render?.outputAssetId
       ? project.assets.find((asset) => asset.id === render.outputAssetId)
@@ -122,13 +138,59 @@ export function RenderPanel({
   const start = async () => {
     setStarting(true);
     try {
-      const next = await creatorService.startRender(project.id, { burnCaptions, preset });
+      const next = await creatorService.startRender(project.id, {
+        burnCaptions,
+        preset,
+        musicAssetId,
+        musicVolume,
+        normalizeAudio
+      });
       onProjectChange(next);
       onNotice('Render queued on this machine. Scene clips are written one at a time.');
     } catch (caught: any) {
       onError(caught?.message || 'Could not start the render.');
     } finally {
       setStarting(false);
+    }
+  };
+
+  const uploadMusic = async (file: File) => {
+    const allowed = [
+      'audio/mpeg',
+      'audio/wav',
+      'audio/x-wav',
+      'audio/mp4',
+      'audio/ogg',
+      'audio/aac',
+      'audio/flac',
+      'audio/webm'
+    ];
+    const mime = file.type || 'audio/mpeg';
+    if (!allowed.includes(mime)) {
+      onError('Music beds must be MP3, WAV, M4A, OGG, AAC, FLAC or WebM audio.');
+      return;
+    }
+    if (file.size > 30 * 1024 * 1024) {
+      onError('Music beds must be smaller than 30 MB.');
+      return;
+    }
+
+    setUploadingMusic(true);
+    try {
+      const dataBase64 = await readAsBase64(file);
+      const result = await creatorService.uploadAsset(project.id, {
+        kind: 'music_bed',
+        fileName: file.name,
+        mimeType: mime,
+        dataBase64
+      });
+      onProjectChange(result.project);
+      setMusicAssetId(result.asset.id);
+      onNotice(`Music bed saved: ${result.asset.fileName}.`);
+    } catch (caught: any) {
+      onError(caught?.message || 'Could not upload the music bed.');
+    } finally {
+      setUploadingMusic(false);
     }
   };
 
@@ -360,6 +422,101 @@ export function RenderPanel({
         <p className="text-[10px] text-slate-500 mt-1 leading-snug">
           Changing the format re-encodes every scene clip; existing clips in another
           size are not reused.
+        </p>
+      </div>
+
+      <div className="space-y-3 p-3 bg-[#0B0F17] border border-slate-800 rounded-lg">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
+            <Music2 className="w-3.5 h-3.5 text-amber-400" />
+            Music bed
+          </span>
+          <label className="shrink-0 flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-700 text-[11px] text-slate-300 hover:text-amber-300 hover:border-amber-500/40 cursor-pointer transition-colors">
+            {uploadingMusic ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Upload className="w-3 h-3" />
+            )}
+            Upload
+            <input
+              type="file"
+              className="hidden"
+              accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/ogg,audio/aac,audio/flac,audio/webm"
+              disabled={uploadingMusic || running}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                event.target.value = '';
+                if (file) void uploadMusic(file);
+              }}
+            />
+          </label>
+        </div>
+
+        <select
+          value={musicAssetId ?? ''}
+          disabled={running}
+          onChange={(event) => setMusicAssetId(event.target.value || null)}
+          className="w-full bg-[#121927] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60 disabled:opacity-50"
+        >
+          <option value="">No music — narration only</option>
+          {musicAssets.map((asset) => (
+            <option key={asset.id} value={asset.id}>
+              {asset.fileName}
+            </option>
+          ))}
+        </select>
+
+        {selectedMusic ? (
+          <audio
+            controls
+            preload="none"
+            src={creatorService.assetUrl(project.id, selectedMusic.id)}
+            className="w-full h-8"
+          />
+        ) : null}
+
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              Music volume
+            </span>
+            <span className="text-[10px] font-mono text-slate-500">
+              {Math.round(musicVolume * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={0}
+            max={100}
+            step={1}
+            value={Math.round(musicVolume * 100)}
+            disabled={running}
+            onChange={(event) => setMusicVolume(Number(event.target.value) / 100)}
+            className="w-full accent-amber-500 disabled:opacity-50"
+          />
+        </div>
+
+        <label
+          className={`flex items-start gap-2 text-[11px] leading-relaxed ${running ? 'text-slate-500' : 'text-slate-300'}`}
+        >
+          <input
+            type="checkbox"
+            checked={normalizeAudio}
+            disabled={running}
+            onChange={(event) => setNormalizeAudio(event.target.checked)}
+            className="mt-0.5 accent-amber-500"
+          />
+          <span>
+            Normalize audio to -14 LUFS
+            <span className="block text-[10px] text-slate-500 mt-0.5">
+              Applies ffmpeg loudnorm to the final mix. It changes level, not content.
+            </span>
+          </span>
+        </label>
+
+        <p className="text-[10px] text-slate-500 leading-relaxed border-t border-slate-800 pt-2">
+          The track loops to the video length and is ducked under narration with
+          ffmpeg sidechain compression. Only upload music you have the rights to use.
         </p>
       </div>
 

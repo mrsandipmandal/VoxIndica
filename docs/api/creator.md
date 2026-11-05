@@ -540,3 +540,64 @@ The downloaded ASS uses the last completed render's dimensions for `PlayResX`,
 The final `ffprobe` check compares against the job's stored width and height,
 and the completion message reports the real measured size, for example
 `Video ready: 2 scenes, 12.0s at 720×1280 with burned-in captions.`
+
+## Music bed and audio polish (Phase 4.9)
+
+Background music is a normal project asset. Upload a track you have the rights
+to use with `kind: "music_bed"`; nothing is generated and no music library is
+bundled.
+
+```json
+{
+  "kind": "music_bed",
+  "fileName": "bed.mp3",
+  "mimeType": "audio/mpeg",
+  "dataBase64": "…"
+}
+```
+
+Accepted audio types: MP3, WAV, M4A, OGG, AAC, FLAC and WebM, up to 30 MB.
+
+Pass audio settings when starting a render:
+
+```bash
+curl -s -X POST http://localhost:3000/api/creator/projects/<uuid>/render \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "preset": "landscape",
+    "burnCaptions": true,
+    "musicAssetId": "<music asset uuid>",
+    "musicVolume": 0.2,
+    "normalizeAudio": true
+  }'
+```
+
+| Field | Range | Default |
+| --- | --- | --- |
+| `musicAssetId` | project `music_bed` asset id or `null` | previous job, else `null` |
+| `musicVolume` | 0–1 | previous job, else `0.2` |
+| `normalizeAudio` | boolean | previous job, else `true` |
+
+The track is looped with `-stream_loop -1` to the length of the video,
+resampled to 48 kHz stereo, attenuated by `musicVolume`, then ducked under the
+narration with `sidechaincompress` (threshold `0.03`, ratio `12`, attack `20 ms`,
+release `350 ms`). The mix uses `amix` with `normalize=0`, so the narration
+level is not halved. When `normalizeAudio` is true the final mix passes through
+`loudnorm=I=-14:TP=-1.5:LRA=11`. These change level and balance only; they never
+alter the narration content.
+
+Final assembly re-encodes only when captions, music or normalization are
+active. Otherwise the concatenated scene clips are stream-copied. The
+completion message reports what actually ran, for example
+`Video ready: 2 scenes, 9.8s at 1280×720 with background music, normalized audio.`
+
+The completed-render `409` compares the preset, `burnCaptions` and all three
+audio settings. Changing the track, the volume or normalization allows a
+re-render. Validation is honest:
+
+- unknown asset id → `The selected music track is not part of this project.`
+- asset of another kind → `The selected audio is not a music bed. Upload it as a music track first.`
+- missing file on disk → `The music track file is missing from the project store. Upload it again.`
+
+Music rights remain the creator's responsibility. The renderer only mixes the
+file supplied to it.

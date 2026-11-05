@@ -12,3 +12,7 @@ __pycache__/
 cloudflared*
 worker_session.json
 data/
+src-tauri/target/
+src-tauri/gen/
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep

@@ -10,16 +10,23 @@
 - [x] Dynamic provider orchestration for Local, Kaggle, and Google Colab workers with true ping heartbeats.
 - [x] Benchmark matrix covering all 6 combinations with WER, MOS, Similarity, and RTF metrics.
 
-### Phase 2: Tauri Desktop Wrapper Integration
-- [ ] Initialize `src-tauri` directory with Tauri v2 Rust shell.
-- [ ] Package Python FastAPI sidecar binary with PyInstaller.
-- [ ] Test cross-platform builds: `.AppImage` (Linux), `.msi` (Windows), `.dmg` (macOS).
+### Phase 2: Tauri Desktop Wrapper Integration (Scaffold complete, installers pending)
+- [x] Initialize `src-tauri` with a Tauri v2 Rust shell, loopback window and sidecar lifecycle (`docs/desktop.md`).
+- [x] Package the application server as a Node SEA sidecar (`scripts/build-sidecar.mjs`).
+  - The original roadmap named a PyInstaller/FastAPI sidecar. The Studio backend is Express (`server.ts`); the FastAPI service in `workers/` is GPU inference and cannot serve the UI. This item was deliberately implemented as a Node SEA.
+- [ ] Test cross-platform builds: `.AppImage` (Linux), `.msi` (Windows), `.dmg` (Apple Silicon macOS).
+  - `.github/workflows/desktop.yml` builds deb/AppImage, NSIS/MSI, and Apple Silicon DMG artifacts on GitHub runners.
+  - Local Linux compile is blocked on this host: `libwebkit2gtk-4.1-dev`/`librsvg2-dev` are missing and `sudo` is unavailable. The sidecar binary itself is built and smoke-tested.
 
 ### Phase 3: Live Worker Notebook Bridges
 - [x] Release production Jupyter notebooks for Kaggle and Google Colab with automated Cloudflare tunnel spinup.
   - Both notebooks are generated from `workers/voxindica_worker_core.py` via `python workers/build_notebooks.py`.
 - [x] API-first provider layer: Kaggle API proxy (`/api/providers/kaggle/{test,launch,poll}`), real `/health` probes, and `WORKER_TIMEOUT_MS`-bounded worker routing for every task.
-- [ ] Implement end-to-end webhook callbacks for long-running batch inference.
+- [x] Implement end-to-end webhook callbacks for long-running batch inference.
+  - Studio persists `/api/providers/batch` jobs under `data/batches/`, dispatches async worker batches, verifies HMAC-SHA256 callbacks, stores real WAV results, and exposes status/audio/cancel routes.
+  - Dedicated loopback callback listener (default `127.0.0.1:3099`) exposes only the signed webhook; remote Kaggle/Colab workers require an explicit `VOXINDICA_PUBLIC_URL` tunnel and fail with `503` otherwise. No automatic tunnel is opened.
+  - Worker adds `/batch`, `/batch/{id}` and `/batch/{id}/cancel`, signs item/batch events, retries delivery, and serializes model access with interactive synthesis.
+  - Verified by `scripts/test/batch_webhook.mjs` (real Studio + fake worker + signed callbacks) and the extended `scripts/test/worker_smoke.py` batch contract checks.
 
 ### Phase 4: AI Creator Studio
 #### Phase 4.0 — Project workspace (Completed)
@@ -66,3 +73,11 @@
 - [x] Scene clips re-encoded when the preset changes; clips from another size are never reused.
 - [x] ASS `PlayRes`, font size and margins follow the last completed render.
 - [x] Preset selector in the render panel with honest re-render semantics.
+
+#### Phase 4.9 — Music bed and audio polish (Completed)
+- [x] Upload a licensed `music_bed` asset through the normal asset route.
+- [x] Loop the track to the video length, attenuate by volume and duck it under narration with ffmpeg `sidechaincompress`.
+- [x] Optional `loudnorm` to −14 LUFS; `amix` uses `normalize=0` so narration is not halved.
+- [x] Audio settings snapshotted on the render job and included in the completed-render `409`.
+- [x] Render panel music select, upload, preview, volume slider and normalize checkbox.
+- [x] Verified mix levels (FFT), volume scaling, ducking depth, normalization gain and validation errors.

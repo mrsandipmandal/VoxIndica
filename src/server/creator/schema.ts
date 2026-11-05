@@ -94,7 +94,10 @@ export const startVoiceJobSchema = z.object({
 
 export const startRenderSchema = z.object({
   burnCaptions: z.boolean().optional().default(false),
-  preset: z.enum(RENDER_PRESETS).optional().default('landscape')
+  preset: z.enum(RENDER_PRESETS).optional().default('landscape'),
+  musicAssetId: z.string().uuid().nullable().optional(),
+  musicVolume: z.coerce.number().min(0).max(1).optional(),
+  normalizeAudio: z.boolean().optional()
 });
 
 export const generateThumbnailSchema = z.object({
@@ -108,6 +111,7 @@ export const assetUploadSchema = z.object({
     'scene_audio',
     'scene_visual',
     'final_video',
+    'music_bed',
     'thumbnail',
     'other'
   ]),

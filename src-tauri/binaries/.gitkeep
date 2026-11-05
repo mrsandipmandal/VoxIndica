@@ -1,0 +1,3 @@
+Sidecar binaries are built by `npm run desktop:sidecar` and are intentionally
+not committed. The Tauri bundle requires a file named
+`voxindica-server-<target-triple>` in this directory before `tauri build`.

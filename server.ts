@@ -1,5 +1,4 @@
 import express from 'express';
-import { createServer as createViteServer } from 'vite';
 import { GoogleGenAI } from '@google/genai';
 import dotenv from 'dotenv';
 import path from 'path';
@@ -11,8 +10,16 @@ import { promisify } from 'util';
 import { applyAcousticVoiceCloning } from './src/server/acousticClone';
 import { registerCreatorRoutes } from './src/server/creator/routes';
 import { recoverInterruptedRenderJobs, recoverInterruptedVoiceJobs } from './src/server/creator/storage';
+import { startBatchCallbackServer, type BatchCallbackServer } from './src/server/batch/callbackServer';
+import { captureRawJson } from './src/server/batch/http';
+import { registerBatchRoutes } from './src/server/batch/routes';
+import { recoverInterruptedBatchJobs } from './src/server/batch/store';
 
-dotenv.config();
+// The desktop sidecar passes an explicit env file under the user's app-config
+// directory so keys never need to live next to the bundled executable.
+dotenv.config({
+  path: process.env.VOXINDICA_ENV_FILE || path.join(process.cwd(), '.env'),
+});
 
 const execAsync = promisify(exec);
 
@@ -28,8 +35,21 @@ const WORKER_PLATFORMS = new Set(['local', 'kaggle', 'colab']);
 
 const app = express();
 const PORT = Number(process.env.PORT) || 3000;
+// The desktop shell binds to loopback only; the web build keeps the historical
+// 0.0.0.0 default so container and LAN workflows still work.
+const HOST = process.env.HOST || '0.0.0.0';
 
-app.use(express.json({ limit: '50mb' }));
+// Packaged desktop builds pass absolute resource paths because process.cwd()
+// is the writable app-data directory, not the install directory.
+const WEB_DIR = path.resolve(process.env.VOXINDICA_WEB_DIR || path.join(process.cwd(), 'dist'));
+const DOCS_DIR = path.resolve(process.env.VOXINDICA_DOCS_DIR || path.join(process.cwd(), 'docs'));
+const NOTEBOOKS_DIR = path.resolve(
+  process.env.VOXINDICA_NOTEBOOKS_DIR || path.join(process.cwd(), 'notebooks')
+);
+
+// Keep the exact JSON bytes for signed worker webhooks; all other routes use
+// the parsed body as before.
+app.use(captureRawJson());
 
 // Initialize GoogleGenAI server-side with User-Agent header
 const ai = new GoogleGenAI({
@@ -839,6 +859,7 @@ app.post('/api/providers/kaggle/launch', async (req, res) => {
   }
 
   const notebookCandidates = [
+    path.join(NOTEBOOKS_DIR, 'kaggle/voxindica_worker.ipynb'),
     path.resolve(process.cwd(), 'notebooks/kaggle/voxindica_worker.ipynb'),
     path.resolve(process.cwd(), 'public/notebooks/voxindica_worker_kaggle.ipynb'),
   ];
@@ -1140,6 +1161,12 @@ app.post('/api/providers/kaggle/poll', async (req, res) => {
 async function startServer() {
   registerCreatorRoutes(app);
 
+  // Lightweight readiness probe for the Tauri shell. It must not touch ffmpeg,
+  // worker state or provider credentials.
+  app.get('/healthz', (_req, res) => {
+    res.json({ ok: true, service: 'voxindica-studio', uptimeSeconds: Math.round(process.uptime()) });
+  });
+
   const recoveredVoiceJobs = await recoverInterruptedVoiceJobs();
   if (recoveredVoiceJobs > 0) {
     console.log(
@@ -1154,26 +1181,59 @@ async function startServer() {
     );
   }
 
+  // Worker callbacks get their own loopback-only listener so a public tunnel
+  // never exposes the Studio UI, creator projects or provider keys.
+  let batchCallback: BatchCallbackServer | null = null;
+  try {
+    batchCallback = await startBatchCallbackServer();
+  } catch (error) {
+    console.warn(
+      `[batch] dedicated callback listener could not start; using the main app port instead: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+  registerBatchRoutes(app, { callbackPort: batchCallback?.port ?? PORT });
+
+  const recoveredBatchJobs = await recoverInterruptedBatchJobs();
+  if (recoveredBatchJobs > 0) {
+    console.log(
+      `[batch] marked ${recoveredBatchJobs} interrupted batch job(s) after restart; completed items are kept.`
+    );
+  }
+
   // Markdown guides are served in dev and in production so the in-app doc links work.
-  app.use('/docs', express.static(path.resolve(process.cwd(), 'docs')));
+  app.use('/docs', express.static(DOCS_DIR));
 
   if (process.env.NODE_ENV !== 'production') {
+    // Vite is a dev-only dependency; importing it lazily keeps the production
+    // sidecar bundle free of the entire Vite toolchain.
+    const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: 'spa',
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    app.use(express.static(WEB_DIR));
     app.get('*', (req, res) => {
-      res.sendFile(path.resolve(distPath, 'index.html'));
+      res.sendFile(path.join(WEB_DIR, 'index.html'));
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`VoxIndica Studio running on port ${PORT}`);
+  const server = app.listen(PORT, HOST, () => {
+    console.log(`VoxIndica Studio running on http://${HOST}:${PORT}`);
   });
+
+  // Stop cleanly when run manually or by a process manager. The desktop shell
+  // may also kill the sidecar process group directly on exit.
+  const shutdown = () => {
+    void batchCallback?.close();
+    server.close(() => process.exit(0));
+    setTimeout(() => process.exit(0), 3000).unref();
+  };
+  process.once('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
 }
 
 startServer();

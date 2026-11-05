@@ -36,7 +36,7 @@ curl -s https://YOUR-TUNNEL.trycloudflare.com/health
 {
   "status": "online",
   "service": "voxindica-worker",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "platform": "kaggle",
   "model": "openbmb/VoxCPM2",
   "model_loaded": true,
@@ -120,12 +120,108 @@ curl -s -X POST https://YOUR-TUNNEL.trycloudflare.com/shutdown \
 ```
 
 ```json
-{ "status": "shutting_down", "worker_version": "1.0.5", "message": "Worker is stopping; the tunnel closes in about a second." }
+{ "status": "shutting_down", "worker_version": "1.0.6", "message": "Worker is stopping; the tunnel closes in about a second." }
 ```
 
 The response is sent first; the process terminates cloudflared and exits about a second later, so the
 tunnel URL stops working immediately afterwards. Workers older than **1.0.5** answer `404` — relaunch
 the notebook once to pick this up.
+
+### Batch inference — bearer auth
+
+Long batches are asynchronous: the worker accepts the job with `202`, returns immediately, and posts
+**signed callbacks** as each item finishes. The Studio persists the job before dispatch, so an immediate
+callback can find it.
+
+```bash
+curl -s -X POST https://YOUR-TUNNEL.trycloudflare.com/batch \
+  -H "Authorization: Bearer $WORKER_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "batch_id": "0b8f7f8c-4d7a-4f1e-9c6d-2a7b8c9d0e1f",
+    "callback_url": "https://YOUR-CALLBACK-HOST/api/providers/batch/webhook/TOKEN",
+    "callback_secret": "64-char-hex-secret",
+    "items": [
+      {"id": "intro-0001", "text": "নমস্কার।", "language": "bn-IN"},
+      {"id": "intro-0002", "text": "এটি দ্বিতীয় বাক্য।", "language": "bn-IN"}
+    ]
+  }'
+```
+
+The worker returns `202 {"status":"accepted","batch_id":"…","total":2,"worker_version":"1.0.6"}`.
+`GET /batch/{batch_id}` returns the item states without audio; `POST /batch/{batch_id}/cancel` asks the
+worker to stop after the current item. Both require the bearer token.
+
+Limits: 1–32 items, 10,000 characters per item, 100,000 characters total. The reference-audio rules are
+the same as `/clone_voice`.
+
+#### Callback events and signature
+
+The worker posts each event as JSON with two headers:
+
+```text
+X-VoxIndica-Timestamp: 1793000000
+X-VoxIndica-Signature: sha256=<hex>
+```
+
+The signature is `HMAC-SHA256(callback_secret, "<timestamp>.<raw body>")`. The Studio rejects a
+timestamp outside ±300 seconds, a missing/malformed signature, or a token that does not belong to a job.
+The callback URL itself contains a random per-job token, so it is never logged or returned by the API.
+
+| Event | Meaning |
+|---|---|
+| `item.started` | that item is now running |
+| `item.completed` | includes `audio_base64`, `sample_rate`, `duration_seconds`, `chunks`, `generation_seconds` |
+| `item.failed` | includes the real worker error |
+| `batch.completed` | every item reached a terminal state; some items may still have failed |
+| `batch.failed` | the worker stopped before producing a usable batch |
+| `batch.cancelled` | cancellation was honoured |
+
+Duplicate deliveries are acknowledged with `{"ok":true,"duplicate":true}` and cannot overwrite a finished
+item or its stored WAV.
+
+#### Studio API
+
+| Method | Path | Purpose |
+|---|---|---|
+| `POST` | `/api/providers/batch` | create and dispatch a batch |
+| `GET` | `/api/providers/batch` | list the latest 50 jobs |
+| `GET` | `/api/providers/batch/:id` | job status and item summaries |
+| `POST` | `/api/providers/batch/:id/cancel` | forward cancellation to the worker |
+| `GET` | `/api/providers/batch/:id/items/:itemId/audio` | download a completed item WAV |
+
+Creation body:
+
+```json
+{
+  "provider": "local",
+  "workerUrl": "http://127.0.0.1:8000",
+  "workerToken": "optional",
+  "language": "bn-IN",
+  "isCloned": false,
+  "referenceAudioBase64": "optional for cloned voices",
+  "promptText": "optional",
+  "items": [{"id": "intro-0001", "text": "নমস্কার।"}]
+}
+```
+
+The Studio starts a **dedicated loopback callback listener** (default `127.0.0.1:3099`) that exposes
+only `GET /healthz` and the signed webhook. A local worker can reach it directly. Kaggle/Colab cannot
+reach `127.0.0.1`; for remote workers open a tunnel to the callback listener and set the public base
+before starting the Studio:
+
+```bash
+cloudflared tunnel --url http://127.0.0.1:3099
+export VOXINDICA_PUBLIC_URL="https://YOUR-TUNNEL.trycloudflare.com"
+```
+
+Without `VOXINDICA_PUBLIC_URL`, remote batch creation returns `503` with this instruction. The Studio
+never opens a tunnel automatically. The listener is intentionally separate from the main Studio app so
+a public tunnel does not expose the UI, creator projects, or provider routes.
+
+Batch data is stored under `data/batches/` (`VOXINDICA_BATCH_DATA_DIR` overrides). On restart, queued or
+running jobs become `interrupted`; completed items and their audio are kept. A late signed callback may
+still finish the job.
 
 ---
 
@@ -279,4 +375,11 @@ No tunnel, no key. The Studio probes `http://127.0.0.1:8000/health` and reports 
   request only. Nothing is persisted server-side and nothing is committed.
 - The worker token is generated per session (`secrets.token_hex(16)`); restarting the worker invalidates it.
 - Tunnels are public URLs: treat the bearer token as the only access control, and stop the kernel when done.
+- Batch callback secrets and URL tokens are generated per job, stored server-side only, and never returned
+  by the Studio API. The worker signs every callback with HMAC-SHA256; the Studio also enforces a ±5-minute
+  timestamp window and rejects unknown tokens.
+- A public tunnel for batch callbacks must point at the dedicated listener (`127.0.0.1:3099`), not the main
+  Studio app. The listener exposes only `/healthz` and the signed webhook route.
+- Worker audio is accepted only after the Studio validates a RIFF/WAVE header and the 50 MB size limit.
+  No batch item is ever marked completed without a real worker response.
 - The Studio never reports a provider as online without a successful response from that provider.

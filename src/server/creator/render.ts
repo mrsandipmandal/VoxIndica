@@ -5,6 +5,7 @@ import path from 'node:path';
 import type {
   CreatorAsset,
   CreatorProject,
+  RenderAudioOptions,
   RenderJob,
   RenderPreset,
   RenderSceneState
@@ -422,6 +423,12 @@ async function runRender(
     const listPath = path.join(working, 'concat.txt');
     const finalPath = path.join(working, 'final.mp4');
     const burnCaptions = current.burnCaptions === true;
+    const audio = current.audio;
+    const musicPath = audio.musicAssetId
+      ? (await assetFilePath(projectId, audio.musicAssetId)).filePath
+      : null;
+    const needsAudioWork = Boolean(musicPath) || audio.normalizeAudio;
+    const needsEncode = burnCaptions || needsAudioWork;
     const list = script.scenes
       .map((_scene, index) => sceneClipPath(projectId, index).replace(/'/g, `'\\''`))
       .map((filePath) => `file '${filePath}'`)
@@ -437,44 +444,105 @@ async function runRender(
       await fs.writeFile(path.join(working, 'captions.ass'), ass, 'utf8');
     }
 
-    await runFfmpeg(
-      [
-        '-y',
-        '-hide_banner',
-        '-loglevel',
-        'error',
-        '-f',
-        'concat',
-        '-safe',
-        '0',
-        '-i',
-        listPath,
-        ...(burnCaptions
-          ? [
-              '-vf',
-              'ass=captions.ass',
-              '-c:v',
-              'libx264',
-              '-preset',
-              'veryfast',
-              '-crf',
-              '20',
-              '-pix_fmt',
-              'yuv420p',
-              '-c:a',
-              'aac',
-              '-b:a',
-              '192k'
-            ]
-          : ['-c', 'copy']),
-        '-movflags',
-        '+faststart',
-        finalPath
-      ],
-      entry,
-      'Final assembly',
-      burnCaptions ? working : undefined
-    );
+    if (!needsEncode) {
+      await runFfmpeg(
+        [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-f',
+          'concat',
+          '-safe',
+          '0',
+          '-i',
+          listPath,
+          '-c',
+          'copy',
+          '-movflags',
+          '+faststart',
+          finalPath
+        ],
+        entry,
+        'Final assembly'
+      );
+    } else {
+      const filters: string[] = [];
+      const maps: string[] = [];
+      if (burnCaptions) {
+        filters.push('[0:v]ass=captions.ass[v]');
+        maps.push('-map', '[v]');
+      } else {
+        maps.push('-map', '0:v:0');
+      }
+
+      const voiceFilter =
+        '[0:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo';
+      if (musicPath) {
+        filters.push(
+          `[1:a]aresample=48000,aformat=sample_fmts=fltp:channel_layouts=stereo,volume=${audio.musicVolume.toFixed(3)}[music]`,
+          `${voiceFilter},asplit=2[voice][side]`,
+          '[music][side]sidechaincompress=threshold=0.03:ratio=12:attack=20:release=350[ducked]',
+          '[voice][ducked]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[mix]'
+        );
+      } else {
+        filters.push(`${voiceFilter}[voice]`);
+      }
+
+      const mixLabel = musicPath ? '[mix]' : '[voice]';
+      if (audio.normalizeAudio) {
+        filters.push(`${mixLabel}loudnorm=I=-14:TP=-1.5:LRA=11[aout]`);
+        maps.push('-map', '[aout]');
+      } else {
+        maps.push('-map', mixLabel);
+      }
+
+      await runFfmpeg(
+        [
+          '-y',
+          '-hide_banner',
+          '-loglevel',
+          'error',
+          '-f',
+          'concat',
+          '-safe',
+          '0',
+          '-i',
+          listPath,
+          ...(musicPath ? ['-stream_loop', '-1', '-i', musicPath] : []),
+          '-filter_complex',
+          filters.join(';'),
+          ...maps,
+          ...(burnCaptions
+            ? [
+                '-c:v',
+                'libx264',
+                '-preset',
+                'veryfast',
+                '-crf',
+                '20',
+                '-pix_fmt',
+                'yuv420p'
+              ]
+            : ['-c:v', 'copy']),
+          '-c:a',
+          'aac',
+          '-b:a',
+          '192k',
+          '-ar',
+          '48000',
+          '-ac',
+          '2',
+          '-shortest',
+          '-movflags',
+          '+faststart',
+          finalPath
+        ],
+        entry,
+        'Final assembly',
+        burnCaptions ? working : undefined
+      );
+    }
 
     const probe = await probeVideo(finalPath);
     if (
@@ -501,6 +569,10 @@ async function runRender(
     });
 
     const finishedAt = new Date().toISOString();
+    const notes: string[] = [];
+    if (burnCaptions) notes.push('burned-in captions');
+    if (musicPath) notes.push('background music');
+    if (audio.normalizeAudio) notes.push('normalized audio');
     await saveRenderState(
       projectId,
       {
@@ -509,7 +581,7 @@ async function runRender(
         progress: 100,
         completedScenes: total,
         totalScenes: total,
-        message: `Video ready: ${total} scenes, ${probe.durationSeconds.toFixed(1)}s at ${probe.width}×${probe.height}${burnCaptions ? ' with burned-in captions' : ''}.`,
+        message: `Video ready: ${total} scenes, ${probe.durationSeconds.toFixed(1)}s at ${probe.width}×${probe.height}${notes.length ? ` with ${notes.join(', ')}` : ''}.`,
         error: undefined,
         finishedAt,
         updatedAt: finishedAt,
@@ -527,7 +599,13 @@ async function runRender(
 
 export async function startRender(
   projectId: string,
-  options: { burnCaptions?: boolean; preset?: RenderPreset } = {}
+  options: {
+    burnCaptions?: boolean;
+    preset?: RenderPreset;
+    musicAssetId?: string | null;
+    musicVolume?: number;
+    normalizeAudio?: boolean;
+  } = {}
 ): Promise<CreatorProject> {
   if (runningRenders.has(projectId)) {
     throw new CreatorError('A render is already running for this project.', 409);
@@ -555,16 +633,54 @@ export async function startRender(
     );
   }
 
-  if (project.render?.status === 'complete' && project.render.outputAssetId) {
-    const requestedPreset = options.preset ?? project.render.preset;
-    const requestedBurn =
-      options.burnCaptions ?? project.render.burnCaptions ?? false;
+  const previous = project.render;
+  const audio: RenderAudioOptions = {
+    musicAssetId:
+      options.musicAssetId !== undefined
+        ? options.musicAssetId
+        : (previous?.audio?.musicAssetId ?? null),
+    musicVolume: options.musicVolume ?? previous?.audio?.musicVolume ?? 0.2,
+    normalizeAudio: options.normalizeAudio ?? previous?.audio?.normalizeAudio ?? true
+  };
+
+  if (audio.musicAssetId) {
+    const asset = project.assets.find((item) => item.id === audio.musicAssetId);
+    if (!asset) {
+      throw new CreatorError('The selected music track is not part of this project.', 400);
+    }
+    if (asset.kind !== 'music_bed') {
+      throw new CreatorError(
+        'The selected audio is not a music bed. Upload it as a music track first.',
+        400
+      );
+    }
+    const { filePath } = await assetFilePath(projectId, asset.id);
+    const exists = await fs
+      .stat(filePath)
+      .then((stat) => stat.size > 0)
+      .catch(() => false);
+    if (!exists) {
+      throw new CreatorError(
+        'The music track file is missing from the project store. Upload it again.',
+        400
+      );
+    }
+  }
+
+  if (previous?.status === 'complete' && previous.outputAssetId) {
+    const requestedPreset = options.preset ?? previous.preset;
+    const requestedBurn = options.burnCaptions ?? previous.burnCaptions ?? false;
+    const sameAudio =
+      previous.audio.musicAssetId === audio.musicAssetId &&
+      Math.abs(previous.audio.musicVolume - audio.musicVolume) < 0.0005 &&
+      previous.audio.normalizeAudio === audio.normalizeAudio;
     if (
-      project.render.preset === requestedPreset &&
-      project.render.burnCaptions === requestedBurn
+      previous.preset === requestedPreset &&
+      previous.burnCaptions === requestedBurn &&
+      sameAudio
     ) {
       throw new CreatorError(
-        'This project already has a finished render in this format. Change the preset, captions, a scene visual or narration to regenerate.',
+        'This project already has a finished render with these settings. Change the preset, captions, audio, a scene visual or narration to regenerate.',
         409
       );
     }
@@ -572,7 +688,6 @@ export async function startRender(
 
   const total = script.scenes.length;
   const now = new Date().toISOString();
-  const previous = project.render;
   const preset = options.preset ?? previous?.preset ?? 'landscape';
   const { width, height } = RENDER_PRESET_DIMENSIONS[preset];
   const samePreset = previous?.width === width && previous?.height === height;
@@ -614,6 +729,7 @@ export async function startRender(
     provider: 'local',
     preset,
     burnCaptions: options.burnCaptions ?? project.render?.burnCaptions ?? false,
+    audio,
     status: 'queued',
     progress: Math.round((completed / total) * 100),
     completedScenes: completed,
@@ -621,7 +737,7 @@ export async function startRender(
     message:
       completed > 0
         ? `Resuming: ${completed} of ${total} scene clips already exist.`
-        : `Queued ${total} scenes at ${width}×${height}, ${FPS}fps.`,
+        : `Queued ${total} scenes at ${width}×${height}, ${FPS}fps${audio.musicAssetId ? ' with a music bed' : ''}.`,
     startedAt: now,
     updatedAt: now,
     width,

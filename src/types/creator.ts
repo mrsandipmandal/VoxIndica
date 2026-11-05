@@ -84,6 +84,7 @@ export type CreatorAssetKind =
   | 'scene_audio'
   | 'scene_visual'
   | 'final_video'
+  | 'music_bed'
   | 'thumbnail'
   | 'other';
 
@@ -187,6 +188,15 @@ export interface RenderSceneState {
  * Real render state. `scenes` is a checkpoint of scene clips that exist on
  * disk; a restarted server can resume without re-encoding finished scenes.
  */
+export interface RenderAudioOptions {
+  /** Uploaded music bed asset, or null for narration only. */
+  musicAssetId: string | null;
+  /** 0–1 gain applied to the music bed before ducking. */
+  musicVolume: number;
+  /** Normalize the final mix to -14 LUFS. */
+  normalizeAudio: boolean;
+}
+
 export interface RenderJob {
   id: string;
   provider: 'local';
@@ -206,6 +216,8 @@ export interface RenderJob {
   fps: number;
   /** When true, the final assembly burns the derived ASS captions into the video. */
   burnCaptions: boolean;
+  /** Audio mix snapshot used for this render. */
+  audio: RenderAudioOptions;
   scenes: Record<string, RenderSceneState>;
 }
 

@@ -172,7 +172,13 @@ export const creatorService = {
 
   async startRender(
     projectId: string,
-    options: { burnCaptions?: boolean; preset?: RenderPreset } = {}
+    options: {
+      burnCaptions?: boolean;
+      preset?: RenderPreset;
+      musicAssetId?: string | null;
+      musicVolume?: number;
+      normalizeAudio?: boolean;
+    } = {}
   ): Promise<CreatorProject> {
     const data = await request<{ ok: true; project: CreatorProject }>(
       `/api/creator/projects/${encodeURIComponent(projectId)}/render`,
@@ -180,7 +186,16 @@ export const creatorService = {
         method: 'POST',
         body: JSON.stringify({
           burnCaptions: options.burnCaptions === true,
-          ...(options.preset ? { preset: options.preset } : {})
+          ...(options.preset ? { preset: options.preset } : {}),
+          ...(options.musicAssetId !== undefined
+            ? { musicAssetId: options.musicAssetId }
+            : {}),
+          ...(options.musicVolume !== undefined
+            ? { musicVolume: options.musicVolume }
+            : {}),
+          ...(options.normalizeAudio !== undefined
+            ? { normalizeAudio: options.normalizeAudio }
+            : {})
         })
       }
     );

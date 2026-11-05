@@ -40,6 +40,9 @@
 - [x] Master Project Planning & Architecture (Stage 1)
 - [x] Read-Only Repository Audit (Stage 2)
 - [x] Phase 1 Implementation (Stage 4)
+- [x] Desktop Phase 2 scaffold — Tauri v2 shell, loopback Node SEA sidecar, bundled dist/docs/notebooks, app-data projects, honest desktop error page, and CI build matrix
+- [ ] Desktop installer verification — GitHub Actions builds Linux deb/AppImage, Windows NSIS/MSI, and the Apple Silicon macOS DMG; each installer still needs a manual install/launch check (local compile blocked by missing WebKitGTK dev libraries; Intel macOS is not claimed by Node SEA)
+- [x] Phase 3 batch webhooks — durable Studio batch jobs, HMAC-signed worker callbacks, dedicated loopback callback listener, real WAV storage, cancel/status/audio routes, and honest `503` when a remote worker lacks `VOXINDICA_PUBLIC_URL`
 - [x] Creator Studio Phase 0 — project store, zod contracts, `/api/creator/*` routes, ZIP export
 - [x] Creator Studio Phase 1 — Gemini → Groq → OpenRouter fallback, validated script, Creator Studio UI
 - [x] Creator Studio Phase 4.3 — checkpointed per-scene voice stage with real progress, cancel and restart recovery
@@ -47,6 +50,7 @@
 - [x] Creator Studio Phase 4.5 — SRT/ASS captions from real narration durations, burned-in caption render, publishing pack with computed chapters, approved-thumbnail upload
 - [x] Creator Studio Phase 4.7 — approval-gated Gemini thumbnail generation (live generation needs GEMINI_API_KEY); assets are written only after the creator approves
 - [x] Creator Studio Phase 4.8 — landscape, portrait and square render presets with dimension-aware clip reuse and ASS sizing
+- [x] Creator Studio Phase 4.9 — licensed music-bed upload, looping, sidechain ducking, optional −14 LUFS normalization, and audio settings on the render job
 - [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
 - [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
 - [ ] End-to-End Test Suite Verification (Stage 5)
@@ -57,6 +61,7 @@
 - `workers/voxindica_worker_core.py` — one FastAPI worker used by Kaggle, Colab and local.
   - `GET /health` (no auth): real platform, GPU name, VRAM, model-loaded flag, sample rate.
   - `POST /clone_voice` / `POST /synthesize` (bearer): real VoxCPM2 `generate(text, reference_wav_path, cfg_value=2.0, inference_timesteps=8)`.
+  - `POST /batch` (bearer): asynchronous 202 job with signed callbacks; `GET /batch/{id}` and `POST /batch/{id}/cancel`.
   - Chunked synthesis (`VOXINDICA_CHUNK_CHARS`, default 800), 16-bit mono PCM WAV at `model.tts_model.sample_rate`.
   - Model failure → HTTP 503 with the underlying exception; inference failure → HTTP 500. **No synthetic fallback audio.**
   - `detect_platform()`, `split_text()`, `pcm16_wav_bytes()`, `decode_reference_audio()` (RIFF/WAVE, ≤25 MB), `start_tunnel()` (cloudflared), `worker_session.json`.
@@ -80,6 +85,13 @@
 - `ProviderModal.tsx`: API/CLI switch (API default), per-provider credential cards, browser vs. worker hardware separated, Kaggle verify + Launch flow, Colab browser-flow explainer, session vault.
 - `WorkerScriptModal.tsx`: renders the generated bundles (download `.ipynb`/`.py`, copy, docs).
 
+### Batch inference and webhooks
+- `src/server/batch/` owns the durable store (`data/batches/<jobId>/job.json`, item WAVs), signed callback verification, the dedicated callback listener, dispatch/cancel service, and Studio routes.
+- `POST /api/providers/batch` validates 1–32 items and dispatches to the worker's `/batch`; the job is persisted before the request so immediate callbacks can find it.
+- Worker callbacks use `X-VoxIndica-Timestamp` + `X-VoxIndica-Signature: sha256=HMAC(secret, timestamp + "." + rawBody)`, a ±5-minute window, and a random token in the URL. Secrets and tokens never appear in API responses.
+- The callback listener binds `127.0.0.1:3099` (`VOXINDICA_CALLBACK_PORT`) and exposes only `/healthz` and the webhook. Local workers call it directly; Kaggle/Colab require a user-provided tunnel and `VOXINDICA_PUBLIC_URL`. No tunnel is opened automatically.
+- Restart recovery marks queued/running jobs `interrupted` and keeps completed audio; a later valid callback may still finish the job.
+
 ### Honest limitations (documented, not hidden)
 - Consumer Google Colab has no runtime API and no official CLI — browser Run-all only (or Colab Enterprise on Vertex AI).
 - Kaggle publishes kernel output only after a kernel finishes, and a worker kernel never finishes; the Launch flow therefore may stop at "running" and ask for the URL from the live log.
@@ -88,7 +100,8 @@
 
 ### Verification status
 - Verified: `npx tsc --noEmit` (clean), `npm run build` (vite, 423 kB bundle), `curl` smoke test of `/docs`, `/notebooks/*.ipynb`, `/api/providers/kaggle/test`, and FastAPI TestClient runs of `/clone_voice` (200 with audio, 401 without token, 500 on model exception, 503 when the model is absent).
-- Not verified here: live Kaggle API calls (no account credentials in this environment) and real VoxCPM2 inference (no GPU, no `voxcpm` package installed; local Python is 3.14, torch wheels target 3.10–3.12).
+- Verified: `scripts/test/batch_webhook.mjs` starts the real Studio with a fake worker and checks signed item/batch callbacks, persisted completion, WAV download, duplicate idempotency, and unsigned rejection. `scripts/test/worker_smoke.py` now also checks `/batch` 202, HMAC signatures, item audio, duplicate id and missing-model `503`.
+- Not verified here: live Kaggle API calls (no account credentials in this environment), real VoxCPM2 inference (no GPU, no `voxcpm` package installed; local Python is 3.14, torch wheels target 3.10–3.12), and a remote Kaggle/Colab callback through a real public tunnel.
 
 ## Creator Studio (Phase 1, branch `feat/creator-studio`)
 
@@ -136,6 +149,8 @@
 - `recoverInterruptedRenderJobs()` marks `queued`/`running` as `interrupted` and running scenes as `pending` on boot; resume re-encodes only missing scenes.
 - `scene_audio` and `final_video` are server-owned asset kinds and are rejected by the public asset upload route. Replacing a visual on a `ready` project resets it to `assets_ready`.
 - `RenderPanel.tsx`: readiness counters, per-scene visual upload/replace with thumbnails, real progress, cancel, final video player and download. Copy states explicitly that it does not generate footage or an avatar.
+- Music: a `music_bed` asset is uploaded through the normal asset route. Render options `{ musicAssetId, musicVolume (0–1, default 0.2), normalizeAudio (default true) }` are snapshotted on `render.audio`. The track loops with `-stream_loop -1`, is resampled to 48 kHz stereo, attenuated, then ducked under narration with `sidechaincompress` (threshold 0.03, ratio 12, attack 20 ms, release 350 ms). The mix uses `amix=normalize=0` so narration is not halved; optional `loudnorm=I=-14:TP=-1.5:LRA=11`.
+- Final assembly re-encodes only when captions, music or normalization are active; otherwise it stream-copies. The completion message lists what really ran (`with background music, normalized audio`). The completed-render `409` compares preset, captions and all three audio fields.
 
 ### Captions and publishing
 - `src/server/creator/publish.ts`: `collectCues` derives one cue per scene from stored narration; SRT, ASS and the markdown publishing pack all share those timings.
@@ -152,12 +167,12 @@
 - `src/components/creator/CreatorStudio.tsx`: project list, new-project wizard, editor, save/export/delete, provider status, consent card, production-stage rail, 2s polling while a voice or render job is queued/running.
 - `src/components/creator/ScriptEditor.tsx`: narration, scene cards, chapters, tags/hashtags, thumbnail prompt, disclosure, sources.
 - `src/components/creator/VoicePanel.tsx`: per-scene narration synthesis UI.
-- `src/components/creator/RenderPanel.tsx`: per-scene visual upload, render progress, cancel and final video player.
+- `src/components/creator/RenderPanel.tsx`: per-scene visual upload, render progress, cancel and final video player; output-format preset selector; music-bed upload/select/preview, volume slider and normalization checkbox.
 - `src/components/creator/PublishingPanel.tsx`: captions download, thumbnail upload/preview, prompt copy, publishing pack download.
 - `TopNav` and `App` gained a `creator` tab. Script, voice, render, captions and publishing run for real; the presenter stage is explicitly labelled as pending the avatar spike, and the UI never claims a video exists before one is encoded.
 
 ### Verification (2026-11-04)
-- `npm run lint` clean; `npm run build` passes (503.14 kB bundle).
+- `npm run lint` clean; `npm run build` passes (528.02 kB bundle).
 - `curl`: create → list → manual PATCH (`script_ready`) → PNG asset upload (`assets_ready`) → ZIP export containing `project.json`, `script.md`, `assets/dot.png` → delete.
 - Voice against a contract stand-in worker (`/tmp/opencode/fake_voxcpm_worker.py`, test-only): 2-scene job → `voice_ready`, 24kHz mono WAVs, ZIP contains `assets/scene-<id>.wav`; wrong token fails with the token message and keeps prior takes; no pending scenes returns 409; cancel keeps both takes.
 - Restart recovery: killed the server mid-job, restarted → `interrupted` with restart message, scene 1 kept, resume completed only scene 2.
@@ -177,8 +192,15 @@
 - Not verified here: live script generation (no `.env` keys), live T4 voice synthesis, and the T4 avatar spike.
 
 - Thumbnail generation: `/api/creator/health` reports `image.configured` and the model id. Without `GEMINI_API_KEY`, `POST /projects/:id/thumbnail/generate` returns `503` with the honest key message; the upload path still works. Live Gemini generation is not verified here because no image key is configured.
+- Music bed E2E (fake worker, FFT levels): baseline narration-only render measured 330 Hz at 15.83 (leakage) and rms −20.94; a 20s 330 Hz track at `musicVolume: 1` measured 68.33 (+52.5 dB over leakage), narration 220 Hz within 0.5 dB, ffprobe 9.849s h264 1280×720 with exactly one AAC stream. Identical settings returned 409.
+- Volume scaling: `musicVolume: 0.25` with burned-in captions measured 56.45 (−11.9 dB versus volume 1, matching −12 dB) and the completion message mentioned both `background music` and `burned-in captions`.
+- Normalization: `normalizeAudio: true` without music raised rms from −20.94 to −16.09 (+4.85 dB) and the message said `with normalized audio`; music leakage stayed at the noise floor.
+- Ducking depth: the same music encoded without sidechain measured 80.18 at 330 Hz versus 68.33 in the mix → ≈11.9 dB of ducking under continuous narration. Default `musicVolume` was raised from 0.12 to 0.2 so the bed remains audible after ducking.
+- Music validation: a `scene_audio` asset id returned 400 `The selected audio is not a music bed. Upload it as a music track first.`; an unknown UUID returned 400 `The selected music track is not part of this project.`
+- Music UI (Playwright): uploaded `music20.wav`, selected it in the Music bed card, moved the slider to 35%, confirmed normalization defaults on and an `<audio>` preview renders; render completed with `background music` and `normalized audio`, final `<video>` present. Screenshot reviewed.
 
 ### Next
 - Phase 4.2: generated notebooks are at `notebooks/kaggle/{sadtalker,musetalk}_spike/`; run them on a real Kaggle T4 (consented photo + 3–30s WAV), fill the result table in `docs/creator/avatar-spike.md`, then integrate only an engine that produced a real clip.
 - Phase 4.4b: presenter/avatar stage behind the consent gate, using the winning T4 engine; the current renderer already accepts presenter clips as `scene_visual` MP4s.
 - Phase 4.5 is complete. Generated thumbnails require `GEMINI_API_KEY`; no live image call was possible in this environment.
+- Phase 4.9 is complete: music beds are user-supplied, and the renderer only loops/ducks/normalizes that file. Next buildable polish items are per-scene transitions beyond hard cuts and a caption style editor; the remaining blocked work is the T4 avatar spike and presenter stage.

@@ -26,6 +26,8 @@ playing fabricated audio.
 """
 
 import base64
+import hashlib
+import hmac
 import io
 import json
 import os
@@ -38,11 +40,13 @@ import sys
 import tempfile
 import threading
 import time
+import urllib.parse
+import urllib.request
 import wave
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
-WORKER_VERSION = "1.0.5"
+WORKER_VERSION = "1.0.6"
 DEFAULT_MODEL_ID = "openbmb/VoxCPM2"
 DEFAULT_SAMPLE_RATE = 24000
 DEFAULT_CFG_VALUE = 2.0
@@ -57,8 +61,19 @@ MAX_REFERENCE_BYTES = 25 * 1024 * 1024
 MIN_REFERENCE_SECONDS = 1.0
 MAX_REFERENCE_SECONDS = 60.0
 
+MAX_BATCH_ITEMS = 32
+MAX_BATCH_ITEM_CHARS = 10000
+MAX_BATCH_TOTAL_CHARS = 100000
+CALLBACK_TIMEOUT_SECONDS = 30
+CALLBACK_RETRIES = 3
+SUPPORTED_LANGUAGES = {"bn-IN", "hi-IN", "en-IN"}
+BATCH_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{7,79}$")
+
 SESSION_FILE = "worker_session.json"
 _LOG_LOCK = threading.Lock()
+# A single loaded model is shared by single and batch requests. Serialize calls
+# into the model so a batch thread cannot race an interactive synthesis.
+_MODEL_LOCK = threading.Lock()
 
 # cloudflared is a child of this process; POST /shutdown needs a handle to it so
 # the tunnel closes before the interpreter exits. Left running, the tunnel (and
@@ -489,6 +504,51 @@ def write_session(platform: str, url: Optional[str], token: str, extra: Optional
     return path
 
 
+def _post_batch_callback(callback_url: str, callback_secret: str, payload: Dict[str, Any]) -> bool:
+    """POST one signed batch event, retrying only the delivery (not synthesis).
+
+    The Studio verifies ``sha256(timestamp + "." + raw_body)``. The callback URL
+    contains a per-job token, so it is never printed here.
+    """
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    for attempt in range(1, CALLBACK_RETRIES + 1):
+        timestamp = str(int(time.time()))
+        signature = hmac.new(
+            callback_secret.encode("utf-8"),
+            f"{timestamp}.".encode("utf-8") + body,
+            hashlib.sha256,
+        ).hexdigest()
+        request = urllib.request.Request(
+            callback_url,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/json",
+                "X-VoxIndica-Timestamp": timestamp,
+                "X-VoxIndica-Signature": f"sha256={signature}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=CALLBACK_TIMEOUT_SECONDS) as response:
+                response.read()
+                if 200 <= response.status < 300:
+                    return True
+                log(
+                    f"[batch] callback {payload.get('event')} rejected with HTTP {response.status} "
+                    f"(attempt {attempt}/{CALLBACK_RETRIES})"
+                )
+        except Exception as exc:  # noqa: BLE001 - delivery is best effort, job state stays queryable
+            # Do not print the exception text: URLError can include the callback
+            # URL, whose path contains the per-job token.
+            log(
+                f"[batch] callback {payload.get('event')} failed: "
+                f"{type(exc).__name__} (attempt {attempt}/{CALLBACK_RETRIES})"
+            )
+        if attempt < CALLBACK_RETRIES:
+            time.sleep(min(2 ** (attempt - 1), 4))
+    return False
+
+
 def build_app(
     model: Any = None,
     token: str = "",
@@ -533,6 +593,196 @@ def build_app(
         pitch: float = 1.0
         cfg_value: float = DEFAULT_CFG_VALUE
         inference_timesteps: int = DEFAULT_INFERENCE_TIMESTEPS
+
+    class BatchItemRequest(BaseModel):
+        id: str = Field(min_length=1, max_length=80)
+        text: str = Field(min_length=1, max_length=MAX_BATCH_ITEM_CHARS)
+        language: str = "bn-IN"
+
+    class BatchRequest(BaseModel):
+        batch_id: str = Field(min_length=8, max_length=80)
+        items: List[BatchItemRequest]
+        callback_url: str
+        callback_secret: str = Field(min_length=32, max_length=200)
+        reference_audio: str = ""
+        prompt_text: str = ""
+        cfg_value: float = DEFAULT_CFG_VALUE
+        inference_timesteps: int = DEFAULT_INFERENCE_TIMESTEPS
+
+    batches: Dict[str, Dict[str, Any]] = {}
+    batch_state_lock = threading.Lock()
+
+    def batch_snapshot(job: Dict[str, Any]) -> Dict[str, Any]:
+        with batch_state_lock:
+            return {
+                "batch_id": job["batch_id"],
+                "status": job["status"],
+                "total": job["total"],
+                "completed": job["completed"],
+                "failed": job["failed"],
+                "cancel_requested": job["cancel"].is_set(),
+                "created_at": job["created_at"],
+                "updated_at": job["updated_at"],
+                "worker_version": WORKER_VERSION,
+                "items": [
+                    {
+                        "id": item["id"],
+                        "index": item["index"],
+                        "status": item["status"],
+                        "error": item["error"],
+                        "sample_rate": item["sample_rate"],
+                        "duration_seconds": item["duration_seconds"],
+                    }
+                    for item in job["items"]
+                ],
+            }
+
+    def send_batch_event(job: Dict[str, Any], event: str, **fields: Any) -> None:
+        payload: Dict[str, Any] = {
+            "event": event,
+            "job_id": job["batch_id"],
+            "total": job["total"],
+            "completed": job["completed"],
+            "failed": job["failed"],
+            "sent_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+        }
+        payload.update(fields)
+        _post_batch_callback(job["callback_url"], job["callback_secret"], payload)
+
+    def run_batch(job: Dict[str, Any]) -> None:
+        active = runtime.get("model")
+        if active is None:
+            with batch_state_lock:
+                job["status"] = "failed"
+                job["error"] = (
+                    f"VoxCPM2 model is not loaded: {runtime.get('error') or 'unknown error'}"
+                )
+                job["updated_at"] = time.time()
+            send_batch_event(job, "batch.failed", status="failed", error=job["error"])
+            return
+
+        try:
+            for item in job["items"]:
+                if job["cancel"].is_set():
+                    break
+                with batch_state_lock:
+                    if job["status"] == "cancelled":
+                        break
+                    item["status"] = "running"
+                    item["started_at"] = time.time()
+                    job["status"] = "running"
+                    job["updated_at"] = time.time()
+
+                send_batch_event(
+                    job,
+                    "item.started",
+                    item_id=item["id"],
+                    index=item["index"],
+                    status="running",
+                )
+
+                try:
+                    started = time.time()
+                    # The model is not safe for concurrent generate() calls.
+                    with _MODEL_LOCK:
+                        samples, sample_rate, chunk_count = synth_samples(
+                            active,
+                            item["text"],
+                            job["reference_path"],
+                            prompt_text=job["prompt_text"],
+                            cfg_value=job["cfg_value"],
+                            inference_timesteps=job["inference_timesteps"],
+                        )
+                    audio = pcm16_wav_bytes(samples, sample_rate)
+                    duration_seconds = round(len(samples) / float(sample_rate), 2)
+                    generation_seconds = round(time.time() - started, 2)
+                except Exception as exc:  # noqa: BLE001 - one item must not kill the batch
+                    error = str(exc)
+                    with batch_state_lock:
+                        item["status"] = "failed"
+                        item["error"] = error
+                        item["finished_at"] = time.time()
+                        job["failed"] += 1
+                        job["updated_at"] = time.time()
+                    send_batch_event(
+                        job,
+                        "item.failed",
+                        item_id=item["id"],
+                        index=item["index"],
+                        status="failed",
+                        error=error,
+                    )
+                    continue
+
+                with batch_state_lock:
+                    item["status"] = "completed"
+                    item["error"] = None
+                    item["sample_rate"] = sample_rate
+                    item["duration_seconds"] = duration_seconds
+                    item["chunks"] = chunk_count
+                    item["generation_seconds"] = generation_seconds
+                    item["finished_at"] = time.time()
+                    job["completed"] += 1
+                    job["updated_at"] = time.time()
+
+                send_batch_event(
+                    job,
+                    "item.completed",
+                    item_id=item["id"],
+                    index=item["index"],
+                    status="completed",
+                    audio_base64=base64.b64encode(audio).decode("ascii"),
+                    sample_rate=sample_rate,
+                    duration_seconds=duration_seconds,
+                    chunks=chunk_count,
+                    generation_seconds=generation_seconds,
+                )
+
+            with batch_state_lock:
+                if job["cancel"].is_set():
+                    job["status"] = "cancelled"
+                    for item in job["items"]:
+                        if item["status"] in ("pending", "running"):
+                            item["status"] = "interrupted"
+                            item["error"] = "Batch cancelled before this item completed."
+                elif job["completed"] == 0 and job["failed"] > 0:
+                    job["status"] = "failed"
+                    job["error"] = f"All {job['failed']} batch item(s) failed."
+                else:
+                    job["status"] = "completed"
+                job["updated_at"] = time.time()
+
+            event = {
+                "cancelled": "batch.cancelled",
+                "failed": "batch.failed",
+            }.get(job["status"], "batch.completed")
+            send_batch_event(
+                job,
+                event,
+                status=job["status"],
+                error=job.get("error"),
+            )
+        except Exception as exc:  # noqa: BLE001 - a crashed batch must still report failure
+            with batch_state_lock:
+                job["status"] = "failed"
+                job["error"] = f"Batch worker failed: {exc}"
+                for item in job["items"]:
+                    if item["status"] in ("pending", "running"):
+                        item["status"] = "interrupted"
+                        item["error"] = "Batch stopped before this item completed."
+                job["updated_at"] = time.time()
+            send_batch_event(
+                job,
+                "batch.failed",
+                status="failed",
+                error=job["error"],
+            )
+        finally:
+            if job.get("cleanup_reference"):
+                try:
+                    Path(job["reference_path"]).unlink(missing_ok=True)
+                except Exception:  # noqa: BLE001 - temporary file cleanup is best effort
+                    pass
 
     @app.get("/")
     def root() -> Dict[str, Any]:
@@ -613,14 +863,15 @@ def build_app(
 
         try:
             started = time.time()
-            samples, sample_rate, chunk_count = synth_samples(
-                active,
-                text,
-                reference_path,
-                prompt_text=request.prompt_text,
-                cfg_value=request.cfg_value,
-                inference_timesteps=request.inference_timesteps,
-            )
+            with _MODEL_LOCK:
+                samples, sample_rate, chunk_count = synth_samples(
+                    active,
+                    text,
+                    reference_path,
+                    prompt_text=request.prompt_text,
+                    cfg_value=request.cfg_value,
+                    inference_timesteps=request.inference_timesteps,
+                )
             audio = pcm16_wav_bytes(samples, sample_rate)
         except HTTPException:
             raise
@@ -646,6 +897,198 @@ def build_app(
             "vram_used": gpu["vram_used"],
             "vram_total": gpu["vram_total"],
         }
+
+    @app.post("/batch", status_code=202)
+    def create_batch(request: BatchRequest, _: None = Depends(require_token)) -> Dict[str, Any]:
+        """Accept a long-running batch and deliver results via signed webhooks."""
+        active = runtime.get("model")
+        if active is None:
+            raise HTTPException(
+                status_code=503,
+                detail=f"VoxCPM2 model is not loaded: {runtime.get('error') or 'unknown error'}",
+            )
+
+        batch_id = request.batch_id.strip()
+        if not BATCH_ID_PATTERN.fullmatch(batch_id):
+            raise HTTPException(
+                status_code=422,
+                detail="batch_id must be 8-80 characters of letters, digits, '-' or '_'",
+            )
+        if not request.items:
+            raise HTTPException(status_code=422, detail="items must contain at least one entry")
+        if len(request.items) > MAX_BATCH_ITEMS:
+            raise HTTPException(
+                status_code=422,
+                detail=f"items must contain at most {MAX_BATCH_ITEMS} entries",
+            )
+
+        parsed_callback = urllib.parse.urlparse(request.callback_url.strip())
+        if parsed_callback.scheme not in ("http", "https") or not parsed_callback.netloc:
+            raise HTTPException(
+                status_code=422,
+                detail="callback_url must be an absolute http:// or https:// URL",
+            )
+
+        normalized: List[Dict[str, Any]] = []
+        seen_ids: set[str] = set()
+        total_chars = 0
+        for index, item in enumerate(request.items):
+            item_id = item.id.strip()
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]{0,79}", item_id):
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"items[{index}].id must be 1-80 characters of letters, digits, '-' or '_'",
+                )
+            if item_id in seen_ids:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"duplicate item id: {item_id}",
+                )
+            text = item.text.strip()
+            if not text:
+                raise HTTPException(status_code=422, detail=f"items[{index}].text is empty")
+            if len(text) > MAX_BATCH_ITEM_CHARS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"items[{index}].text exceeds {MAX_BATCH_ITEM_CHARS} characters",
+                )
+            if item.language not in SUPPORTED_LANGUAGES:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"items[{index}].language must be one of {sorted(SUPPORTED_LANGUAGES)}",
+                )
+            total_chars += len(text)
+            if total_chars > MAX_BATCH_TOTAL_CHARS:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"batch text exceeds {MAX_BATCH_TOTAL_CHARS} characters",
+                )
+            seen_ids.add(item_id)
+            normalized.append(
+                {
+                    "id": item_id,
+                    "index": index,
+                    "text": text,
+                    "language": item.language,
+                }
+            )
+
+        with batch_state_lock:
+            if batch_id in batches:
+                raise HTTPException(status_code=409, detail=f"batch_id {batch_id} already exists")
+
+        reference_path: Optional[str] = None
+        cleanup_reference = False
+        try:
+            if request.reference_audio:
+                reference_path = decode_reference_audio(
+                    request.reference_audio,
+                    work_dir / f"voxindica_batch_{batch_id}.wav",
+                )
+                cleanup_reference = True
+            elif default_reference and Path(default_reference).is_file():
+                reference_path = default_reference
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        if reference_path is None:
+            raise HTTPException(
+                status_code=422,
+                detail="Voice cloning requires reference audio (3-30s, 16-bit PCM WAV)",
+            )
+
+        now = time.time()
+        job: Dict[str, Any] = {
+            "batch_id": batch_id,
+            "status": "queued",
+            "total": len(normalized),
+            "completed": 0,
+            "failed": 0,
+            "cancel": threading.Event(),
+            "items": [
+                {
+                    **item,
+                    "status": "pending",
+                    "error": None,
+                    "sample_rate": None,
+                    "duration_seconds": None,
+                    "chunks": None,
+                    "generation_seconds": None,
+                    "started_at": None,
+                    "finished_at": None,
+                }
+                for item in normalized
+            ],
+            "callback_url": request.callback_url.strip(),
+            "callback_secret": request.callback_secret,
+            "reference_path": reference_path,
+            "cleanup_reference": cleanup_reference,
+            "prompt_text": request.prompt_text,
+            "cfg_value": request.cfg_value,
+            "inference_timesteps": request.inference_timesteps,
+            "created_at": now,
+            "updated_at": now,
+            "error": None,
+        }
+
+        with batch_state_lock:
+            if batch_id in batches:
+                if cleanup_reference:
+                    Path(reference_path).unlink(missing_ok=True)
+                raise HTTPException(status_code=409, detail=f"batch_id {batch_id} already exists")
+            batches[batch_id] = job
+
+        try:
+            threading.Thread(
+                target=run_batch,
+                args=(job,),
+                daemon=True,
+                name=f"voxindica-batch-{batch_id}",
+            ).start()
+        except Exception as exc:  # noqa: BLE001 - report a real thread-start failure
+            with batch_state_lock:
+                job["status"] = "failed"
+                job["error"] = f"Could not start the batch worker: {exc}"
+                job["updated_at"] = time.time()
+            if cleanup_reference:
+                Path(reference_path).unlink(missing_ok=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"Could not start the batch worker: {exc}",
+            ) from exc
+
+        log(f"[batch] accepted {batch_id} with {len(normalized)} item(s)")
+        return {
+            "status": "accepted",
+            "batch_id": batch_id,
+            "total": len(normalized),
+            "worker_version": WORKER_VERSION,
+        }
+
+    @app.get("/batch/{batch_id}")
+    def get_batch(batch_id: str, _: None = Depends(require_token)) -> Dict[str, Any]:
+        with batch_state_lock:
+            job = batches.get(batch_id)
+        if job is None:
+            raise HTTPException(status_code=404, detail=f"batch {batch_id} not found")
+        return batch_snapshot(job)
+
+    @app.post("/batch/{batch_id}/cancel")
+    def cancel_batch(batch_id: str, _: None = Depends(require_token)) -> Dict[str, Any]:
+        with batch_state_lock:
+            job = batches.get(batch_id)
+            if job is None:
+                raise HTTPException(status_code=404, detail=f"batch {batch_id} not found")
+            if job["status"] in ("completed", "failed", "cancelled", "interrupted"):
+                return {
+                    "status": job["status"],
+                    "batch_id": batch_id,
+                    "message": "Batch already finished.",
+                }
+            job["cancel"].set()
+            job["updated_at"] = time.time()
+        log(f"[batch] cancellation requested for {batch_id}")
+        return {"status": "cancelling", "batch_id": batch_id}
 
     return app
 

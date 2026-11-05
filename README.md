@@ -16,6 +16,9 @@ pretending to be a model result.
   new speech in that voice. An explicit consent gate must be accepted before cloning starts.
 - **Long-form synthesis** — scripts are split on sentence boundaries by the worker (`VOXINDICA_CHUNK_CHARS`,
   default 800) and stitched into one WAV.
+- **Batch inference with signed webhooks** — submit up to 32 items, get a `202` immediately, and receive
+  HMAC-SHA256 callbacks per item. Jobs and real WAV results are persisted; remote Kaggle/Colab workers need
+  an explicit public callback tunnel, and the Studio returns `503` instead of pretending callbacks work.
 - **Provider layer** — API-first; CLI commands are optional and documented separately.
   | Provider | What it does |
   |---|---|
@@ -190,6 +193,7 @@ request to the proxy. Worker tokens are generated with `secrets.token_hex(16)` a
   flow, Colab reality check
 - [`docs/providers-cli.md`](docs/providers-cli.md) — optional Kaggle/HF CLI equivalents
 - [`docs/local-install.md`](docs/local-install.md) — local worker install and troubleshooting
+- [`docs/desktop.md`](docs/desktop.md) — Tauri v2 desktop shell, Node SEA sidecar, platform builds
 - [`docs/ci-cd.md`](docs/ci-cd.md) — workflows, release assets, drift check
 - [`PROJECT_MEMORY.md`](PROJECT_MEMORY.md) — architecture decisions and evolution
 - [`ROADMAP.md`](ROADMAP.md) — phases and current status

@@ -1,0 +1,18 @@
+[package]
+name = "voxindica-desktop"
+version = "0.2.0"
+description = "VoxIndica Studio desktop shell"
+authors = ["VoxIndica"]
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "voxindica_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+tauri-plugin-shell = "2"

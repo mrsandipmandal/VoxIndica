@@ -1,6 +1,6 @@
 # CI/CD
 
-Two GitHub Actions workflows live in `.github/workflows/`. Nothing external is required — they use the
+Three GitHub Actions workflows live in `.github/workflows/`. Nothing external is required — they use the
 repository's own `GITHUB_TOKEN`.
 
 ## `ci.yml` — every push and pull request
@@ -26,6 +26,25 @@ python scripts/test/worker_smoke.py
 python workers/build_notebooks.py && git diff --exit-code -- notebooks public src/data
 python -m compileall -q workers scripts
 ```
+
+## `desktop.yml` — Tauri desktop bundles
+
+Triggered by desktop-related changes on pull requests, pushes to `main`, or manual dispatch. It builds the
+Node SEA sidecar and the Tauri app on three runners:
+
+| Runner | Bundles |
+|---|---|
+| `ubuntu-22.04` | `.deb`, `.AppImage` |
+| `windows-latest` | NSIS `.exe`, `.msi` |
+| `macos-latest` | `.dmg` (Apple Silicon) |
+
+Each job type-checks the web app, then runs `tauri build --bundles …`; Tauri's `beforeBuildCommand` builds
+the web bundle and the Node SEA sidecar first. The installers are uploaded as a 7-day artifact. The builds
+are unsigned. This workflow is the only place the desktop bundles are currently built; runtime installer
+checks are still pending. A local Linux build requires `libwebkit2gtk-4.1-dev` and `librsvg2-dev`.
+
+Node's single-executable support is only tested on Apple Silicon macOS, so an Intel Mac build is not
+claimed. Tauri itself can produce one once a supported sidecar packaging path exists.
 
 ## `release.yml` — on a version tag
 
@@ -54,6 +73,7 @@ re-run the workflow from the Actions tab — it will reuse the same tag.
 ### Notes
 
 - `npm install --legacy-peer-deps` is required because the template's React 19 / peer ranges are not all
-  resolvable by npm's strict peer resolver. There is intentionally no lockfile in this repo.
+  resolvable by npm's strict peer resolver. `package-lock.json` is committed; the workflows still use
+  `npm install` so the peer override is explicit.
 - The worker job installs only `fastapi`, `pydantic`, `numpy` and `httpx` — no torch, no model download — so CI
   stays fast. Real VoxCPM2 inference is exercised on Kaggle/Colab or locally, never in CI.

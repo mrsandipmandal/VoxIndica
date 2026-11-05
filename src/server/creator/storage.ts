@@ -30,6 +30,8 @@ const MIME_EXTENSIONS: Record<string, string> = {
   'audio/x-wav': '.wav',
   'audio/mpeg': '.mp3',
   'audio/mp4': '.m4a',
+  'audio/aac': '.aac',
+  'audio/flac': '.flac',
   'audio/webm': '.webm',
   'audio/ogg': '.ogg',
   'video/mp4': '.mp4',
@@ -107,7 +109,15 @@ function normalizeProject(raw: CreatorProject): CreatorProject {
       ? {
           ...raw.render,
           preset: raw.render.preset ?? 'landscape',
-          burnCaptions: raw.render.burnCaptions === true
+          burnCaptions: raw.render.burnCaptions === true,
+          audio: {
+            musicAssetId: raw.render.audio?.musicAssetId ?? null,
+            musicVolume:
+              typeof raw.render.audio?.musicVolume === 'number'
+                ? raw.render.audio.musicVolume
+                : 0.2,
+            normalizeAudio: raw.render.audio?.normalizeAudio !== false
+          }
         }
       : null,
     voice: {

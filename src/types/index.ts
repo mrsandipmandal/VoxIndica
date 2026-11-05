@@ -6,6 +6,49 @@ export type InferenceProvider = 'local' | 'huggingface' | 'kaggle' | 'colab';
 
 export type JobStatus = 'idle' | 'queued' | 'running' | 'completed' | 'failed' | 'disconnected';
 
+/** Durable server-side batch jobs use an explicit interrupted state after a restart. */
+export type BatchJobStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancelled'
+  | 'interrupted';
+
+export type BatchItemStatus = 'pending' | 'running' | 'completed' | 'failed' | 'interrupted';
+
+/** The public shape returned by /api/providers/batch; secrets are never included. */
+export interface BatchJobItemView {
+  id: string;
+  index: number;
+  text: string;
+  language: SupportedLanguage;
+  status: BatchItemStatus;
+  sampleRate?: number;
+  durationSeconds?: number;
+  chunks?: number;
+  generationSeconds?: number;
+  error?: string;
+  audioUrl?: string;
+}
+
+export interface BatchJobView {
+  id: string;
+  provider: 'local' | 'kaggle' | 'colab';
+  status: BatchJobStatus;
+  language: SupportedLanguage;
+  isCloned: boolean;
+  total: number;
+  completed: number;
+  failed: number;
+  callbackMode: 'loopback' | 'public';
+  createdAt: string;
+  updatedAt: string;
+  finishedAt?: string;
+  error?: string;
+  items: BatchJobItemView[];
+}
+
 /** API is the default path; the CLI view only shows copyable commands. */
 export type ProviderAuthMethod = 'api' | 'cli';
 
