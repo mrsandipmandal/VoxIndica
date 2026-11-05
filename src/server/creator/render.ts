@@ -9,9 +9,13 @@ import type {
   RenderAudioOptions,
   RenderJob,
   RenderPreset,
-  RenderSceneState
+  RenderSceneState,
+  SceneTransition
 } from '../../types/creator';
-import { RENDER_PRESET_DIMENSIONS } from '../../types/creator';
+import {
+  RENDER_PRESET_DIMENSIONS,
+  normalizeSceneTransition
+} from '../../types/creator';
 import {
   CreatorError,
   assetFilePath,
@@ -79,6 +83,36 @@ function scaleFilter(width: number, height: number): string {
   ].join(',');
 }
 
+/**
+ * Transition effects are baked into each scene clip rather than overlapping
+ * clips in the final concat. The programme duration and every narration/caption
+ * timestamp therefore stay exactly where the WAVs put them.
+ */
+function transitionFilter(
+  durationSeconds: number,
+  incoming: SceneTransition,
+  outgoing: SceneTransition
+): string[] {
+  const filters: string[] = [];
+  const fadeSeconds = Math.min(0.45, Math.max(0.15, durationSeconds / 3));
+  const fade = fadeSeconds.toFixed(3);
+  if (incoming === 'fade') {
+    filters.push(`fade=t=in:st=0:d=${fade}:color=black`);
+  } else if (incoming === 'flash') {
+    filters.push(`fade=t=in:st=0:d=${fade}:color=white`);
+  }
+  if (outgoing === 'fade') {
+    filters.push(
+      `fade=t=out:st=${Math.max(0, durationSeconds - fadeSeconds).toFixed(3)}:d=${fade}:color=black`
+    );
+  } else if (outgoing === 'flash') {
+    filters.push(
+      `fade=t=out:st=${Math.max(0, durationSeconds - fadeSeconds).toFixed(3)}:d=${fade}:color=white`
+    );
+  }
+  return filters;
+}
+
 function sceneArgs(
   visualPath: string,
   visualMime: string,
@@ -86,13 +120,19 @@ function sceneArgs(
   durationSeconds: number,
   outputPath: string,
   width: number,
-  height: number
+  height: number,
+  incoming: SceneTransition,
+  outgoing: SceneTransition
 ): string[] {
   const base = ['-y', '-hide_banner', '-loglevel', 'error'];
   const videoInput =
     visualMime === 'video/mp4' || visualMime === 'video/webm'
       ? ['-stream_loop', '-1', '-i', visualPath]
       : ['-loop', '1', '-framerate', String(FPS), '-i', visualPath];
+  const videoFilter = [
+    scaleFilter(width, height),
+    ...transitionFilter(durationSeconds, incoming, outgoing)
+  ].join(',');
 
   return [
     ...base,
@@ -106,7 +146,7 @@ function sceneArgs(
     '-map',
     '1:a:0',
     '-vf',
-    scaleFilter(width, height),
+    videoFilter,
     '-c:v',
     'libx264',
     '-preset',
@@ -327,6 +367,14 @@ async function runRender(
       if (entry.controller.signal.aborted) throw abortError();
       const scene = script.scenes[index];
       const previous = scenes[scene.id];
+      const transition = normalizeSceneTransition(
+        previous?.transition ?? scene.transition
+      );
+      const outgoingTransition = normalizeSceneTransition(
+        previous?.outgoingTransition ??
+          script.scenes[index + 1]?.transition ??
+          'cut'
+      );
       const project = await readProject(projectId);
       const audio = project.voice.scenes[scene.id];
       const visual = visualFor(project, scene.id);
@@ -343,6 +391,8 @@ async function runRender(
         previous?.status === 'complete' &&
         previous.audioAssetId === audio.assetId &&
         previous.visualAssetId === visual.id &&
+        previous.transition === transition &&
+        previous.outgoingTransition === outgoingTransition &&
         clipExists
       ) {
         scenes[scene.id] = previous;
@@ -357,7 +407,9 @@ async function runRender(
         message: `Encoding scene ${index + 1} of ${total}…`,
         updatedAt: now,
         audioAssetId: audio.assetId,
-        visualAssetId: visual.id
+        visualAssetId: visual.id,
+        transition,
+        outgoingTransition
       };
       await saveRenderState(projectId, {
         ...current,
@@ -382,7 +434,9 @@ async function runRender(
           Math.max(0.5, audio.durationSeconds),
           clip,
           current.width,
-          current.height
+          current.height,
+          transition,
+          outgoingTransition
         ),
         entry,
         `Scene ${index + 1}`
@@ -401,7 +455,9 @@ async function runRender(
         message: `Scene ${index + 1} encoded.`,
         updatedAt: new Date().toISOString(),
         audioAssetId: audio.assetId,
-        visualAssetId: visual.id
+        visualAssetId: visual.id,
+        transition,
+        outgoingTransition
       };
 
       await saveRenderState(projectId, {
@@ -577,6 +633,13 @@ async function runRender(
     if (burnCaptions) notes.push('burned-in captions');
     if (musicPath) notes.push('background music');
     if (audio.normalizeAudio) notes.push('normalized audio');
+    if (
+      Object.values(scenes).some(
+        (scene) => scene.transition !== 'cut' || scene.outgoingTransition !== 'cut'
+      )
+    ) {
+      notes.push('scene transitions');
+    }
     await saveRenderState(
       projectId,
       {
@@ -676,6 +739,11 @@ export async function startRender(
     }
   }
 
+  const sceneTransitions = script.scenes.map((scene, index) => ({
+    incoming: normalizeSceneTransition(scene.transition),
+    outgoing: normalizeSceneTransition(script.scenes[index + 1]?.transition ?? 'cut')
+  }));
+
   if (previous?.status === 'complete' && previous.outputAssetId) {
     const requestedPreset = options.preset ?? previous.preset;
     const requestedBurn = options.burnCaptions ?? previous.burnCaptions ?? false;
@@ -694,14 +762,22 @@ export async function startRender(
       previousStyle.outlineWidth === captionStyle.outlineWidth &&
       previousStyle.position === captionStyle.position &&
       previousStyle.background === captionStyle.background;
+    const sameTransitions = script.scenes.every((scene, index) => {
+      const old = previous.scenes[scene.id];
+      return (
+        old?.transition === sceneTransitions[index].incoming &&
+        old?.outgoingTransition === sceneTransitions[index].outgoing
+      );
+    });
     if (
       previous.preset === requestedPreset &&
       previous.burnCaptions === requestedBurn &&
       (!requestedBurn || sameStyle) &&
-      sameAudio
+      sameAudio &&
+      sameTransitions
     ) {
       throw new CreatorError(
-        'This project already has a finished render with these settings. Change the preset, captions, audio, a scene visual or narration to regenerate.',
+        'This project already has a finished render with these settings. Change the preset, captions, audio, a scene visual, narration or transition to regenerate.',
         409
       );
     }
@@ -719,6 +795,7 @@ export async function startRender(
     const audio = project.voice.scenes[scene.id];
     const visual = visualFor(project, scene.id)!;
     const old = previous?.scenes[scene.id];
+    const { incoming, outgoing } = sceneTransitions[index];
     const clipExists = await fs
       .stat(sceneClipPath(projectId, index))
       .then((stat) => stat.size > 0)
@@ -728,6 +805,8 @@ export async function startRender(
       old?.status === 'complete' &&
       old.audioAssetId === audio.assetId &&
       old.visualAssetId === visual.id &&
+      old.transition === incoming &&
+      old.outgoingTransition === outgoing &&
       clipExists;
     if (reusable) {
       completed += 1;
@@ -740,7 +819,9 @@ export async function startRender(
         message: 'Waiting to encode.',
         updatedAt: now,
         audioAssetId: audio.assetId,
-        visualAssetId: visual.id
+        visualAssetId: visual.id,
+        transition: incoming,
+        outgoingTransition: outgoing
       };
     }
   }

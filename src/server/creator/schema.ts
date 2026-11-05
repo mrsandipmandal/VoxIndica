@@ -6,7 +6,8 @@ import {
   CREATOR_TONES,
   CREATOR_VIDEO_MODES,
   CREATOR_WORKER_PROVIDERS,
-  RENDER_PRESETS
+  RENDER_PRESETS,
+  normalizeSceneTransition
 } from '../../types/creator';
 
 const languageSchema = z.enum(CREATOR_LANGUAGES);
@@ -31,7 +32,12 @@ export const sceneSchema = z.object({
   videoType: z.string().min(1).max(120).default('b-roll'),
   camera: z.string().min(1).max(200).default('medium shot'),
   subtitle: z.string().max(400).default(''),
-  transition: z.string().min(1).max(120).default('cut'),
+  transition: z
+    .string()
+    .min(1)
+    .max(120)
+    .default('cut')
+    .transform((value) => normalizeSceneTransition(value)),
   durationSeconds: z.coerce.number().min(1).max(120)
 });
 

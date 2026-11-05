@@ -3,7 +3,13 @@ import { Film, ListOrdered, Plus, Search, Trash2 } from 'lucide-react';
 import type {
   CreatorChapter,
   CreatorScene,
+  SceneTransition,
   ScriptDocument
+} from '../../types/creator';
+import {
+  SCENE_TRANSITIONS,
+  SCENE_TRANSITION_LABELS,
+  normalizeSceneTransition
 } from '../../types/creator';
 
 interface ScriptEditorProps {
@@ -209,15 +215,26 @@ export function ScriptEditor({ script, onChange, disabled = false }: ScriptEdito
                   />
                 </div>
                 <div>
-                  <label className={labelClass}>Transition</label>
-                  <input
+                  <label className={labelClass}>Transition into scene</label>
+                  <select
                     className={fieldClass}
-                    value={scene.transition}
+                    value={normalizeSceneTransition(scene.transition)}
                     disabled={disabled}
                     onChange={(event) =>
-                      updateScene(scene.id, { transition: event.target.value })
+                      updateScene(scene.id, {
+                        transition: event.target.value as SceneTransition
+                      })
                     }
-                  />
+                  >
+                    {SCENE_TRANSITIONS.map((transition) => (
+                      <option key={transition} value={transition}>
+                        {SCENE_TRANSITION_LABELS[transition]}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="mt-1 text-[10px] leading-4 text-slate-500">
+                    Fades and flashes render inside the scene clip; narration timing never moves.
+                  </p>
                 </div>
               </div>
 

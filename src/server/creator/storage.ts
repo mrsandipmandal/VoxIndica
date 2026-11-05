@@ -13,10 +13,15 @@ import type {
   CreatorSceneAudio,
   CreatorVoiceState,
   RenderJob,
+  RenderSceneState,
   ScriptContent,
   UpdateProjectInput
 } from '../../types/creator';
-import { CAPTION_POSITIONS, DEFAULT_CAPTION_STYLE } from '../../types/creator';
+import {
+  CAPTION_POSITIONS,
+  DEFAULT_CAPTION_STYLE,
+  normalizeSceneTransition
+} from '../../types/creator';
 
 const DATA_ROOT = path.resolve(
   process.env.VOXINDICA_CREATOR_DATA_DIR || path.join(process.cwd(), 'data', 'projects')
@@ -133,15 +138,42 @@ export function normalizeCaptionStyle(
   };
 }
 
+function normalizeRenderScene(scene: Partial<RenderSceneState>): RenderSceneState {
+  return {
+    sceneId: String(scene.sceneId ?? ''),
+    status: scene.status ?? 'pending',
+    durationSeconds: Number(scene.durationSeconds) || 0,
+    message: String(scene.message ?? ''),
+    updatedAt: String(scene.updatedAt ?? new Date(0).toISOString()),
+    audioAssetId: scene.audioAssetId,
+    visualAssetId: scene.visualAssetId,
+    transition: normalizeSceneTransition(scene.transition),
+    outgoingTransition: normalizeSceneTransition(scene.outgoingTransition)
+  };
+}
+
 /**
- * Projects written before the voice stage have no `voice` key. Normalize on
- * read so the API never hands the browser a half-shaped document.
+ * Projects written before the transition phase have no per-scene transition
+ * snapshots, and old scripts may contain generated values such as "dissolve".
+ * Normalize both on read so the renderer and UI share one vocabulary.
  */
 function normalizeProject(raw: CreatorProject): CreatorProject {
+  const rawScenes =
+    raw.render?.scenes && typeof raw.render.scenes === 'object'
+      ? Object.entries(raw.render.scenes)
+      : [];
   return {
     ...raw,
     assets: Array.isArray(raw.assets) ? raw.assets : [],
-    script: raw.script ?? null,
+    script: raw.script
+      ? {
+          ...raw.script,
+          scenes: raw.script.scenes.map((scene) => ({
+            ...scene,
+            transition: normalizeSceneTransition(scene.transition)
+          }))
+        }
+      : null,
     consent: raw.consent ?? null,
     captionStyle: normalizeCaptionStyle(raw.captionStyle),
     render: raw.render
@@ -159,7 +191,13 @@ function normalizeProject(raw: CreatorProject): CreatorProject {
                 ? raw.render.audio.musicVolume
                 : 0.2,
             normalizeAudio: raw.render.audio?.normalizeAudio !== false
-          }
+          },
+          scenes: Object.fromEntries(
+            rawScenes.map(([sceneId, scene]) => [
+              sceneId,
+              normalizeRenderScene({ ...scene, sceneId })
+            ])
+          )
         }
       : null,
     voice: {

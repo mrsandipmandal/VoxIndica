@@ -128,6 +128,17 @@ export function RenderPanel({
   const complete = render?.status === 'complete';
   const dimensions = RENDER_PRESET_DIMENSIONS[preset];
   const styleChanged = !sameStyle(captionStyle, project.captionStyle);
+  const transitionsChanged =
+    !!render &&
+    scenes.some((scene, index) => {
+      const state = render.scenes[scene.id];
+      const outgoing = scenes[index + 1]?.transition ?? 'cut';
+      return (
+        !state ||
+        state.transition !== scene.transition ||
+        state.outgoingTransition !== outgoing
+      );
+    });
   const formatChanged =
     !render ||
     render.preset !== preset ||
@@ -136,7 +147,8 @@ export function RenderPanel({
       !sameStyle(captionStyle, render.captionStyle ?? project.captionStyle)) ||
     render.audio.musicAssetId !== musicAssetId ||
     Math.abs(render.audio.musicVolume - musicVolume) > 0.0005 ||
-    render.audio.normalizeAudio !== normalizeAudio;
+    render.audio.normalizeAudio !== normalizeAudio ||
+    transitionsChanged;
   const finalAsset = useMemo(() => {
     const byId = render?.outputAssetId
       ? project.assets.find((asset) => asset.id === render.outputAssetId)

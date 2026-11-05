@@ -49,6 +49,54 @@ export interface CreatorChapter {
   timestamp: string;
 }
 
+export const SCENE_TRANSITIONS = ['cut', 'fade', 'flash'] as const;
+export type SceneTransition = (typeof SCENE_TRANSITIONS)[number];
+
+export const SCENE_TRANSITION_LABELS: Record<SceneTransition, string> = {
+  cut: 'Cut',
+  fade: 'Fade through black',
+  flash: 'Flash through white'
+};
+
+/**
+ * Map generated or legacy values onto the transitions the local renderer can
+ * actually produce. A true overlap crossfade would shorten the programme and
+ * move every caption timestamp, so those values become a fade through black.
+ */
+export function normalizeSceneTransition(
+  value: string | null | undefined
+): SceneTransition {
+  const normalized = String(value ?? '')
+    .trim()
+    .toLowerCase()
+    .replace(/[\s_]+/g, '-');
+  if (
+    [
+      'fade',
+      'fade-in',
+      'fade-out',
+      'fade-to-black',
+      'fade-through-black',
+      'dip',
+      'dip-to-black',
+      'dissolve',
+      'crossfade',
+      'cross-fade',
+      'black'
+    ].includes(normalized)
+  ) {
+    return 'fade';
+  }
+  if (
+    ['flash', 'flash-white', 'white-flash', 'flash-through-white', 'white'].includes(
+      normalized
+    )
+  ) {
+    return 'flash';
+  }
+  return 'cut';
+}
+
 export interface CreatorScene {
   id: string;
   voiceText: string;
@@ -56,7 +104,7 @@ export interface CreatorScene {
   videoType: string;
   camera: string;
   subtitle: string;
-  transition: string;
+  transition: SceneTransition;
   durationSeconds: number;
 }
 
@@ -204,9 +252,13 @@ export interface RenderSceneState {
   durationSeconds: number;
   message: string;
   updatedAt: string;
-  /** Inputs that produced this clip; changing either invalidates it. */
+  /** Inputs that produced this clip; changing any of them invalidates it. */
   audioAssetId?: string;
   visualAssetId?: string;
+  /** Transition into this scene, snapshotted when the job starts. */
+  transition: SceneTransition;
+  /** Transition from this scene into the next one. */
+  outgoingTransition: SceneTransition;
 }
 
 /**

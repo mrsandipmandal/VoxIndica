@@ -275,7 +275,8 @@ Before a render can start the project must have:
 Missing items return `400` with the real count, for example
 `Synthesize narration for every scene first (2 missing).` A second start while a
 job is running returns `409`. A project that already has a finished render also
-returns `409`; change a visual or narration to regenerate.
+returns `409`; change a visual, narration, transition or other render setting to
+regenerate.
 
 Visual upload:
 
@@ -305,9 +306,10 @@ data/projects/<uuid>/assets/<uuid>.mp4     # final_video asset
 Each scene is encoded before the next one starts, and its state is persisted.
 `render.progress` and `render.completedScenes` come from those real checkpoints.
 A scene clip is reused on resume only when its stored narration and visual asset
-ids still match the current project and the clip file exists; otherwise it is
-encoded again. The final file is `1280×720`, `h264`, `aac`, `+faststart`, and its
-duration is probed with `ffprobe` before it is attached.
+ids still match the current project, its incoming/outgoing transition snapshots
+still match the script, and the clip file exists; otherwise it is encoded again.
+The final file is `1280×720`, `h264`, `aac`, `+faststart`, and its duration is
+probed with `ffprobe` before it is attached.
 
 Render states: `idle`, `queued`, `running`, `complete`, `failed`, `cancelled`,
 `interrupted`. On server restart, a `queued` or `running` render becomes
@@ -328,6 +330,36 @@ party. If `ffmpeg` cannot be spawned, the job fails with an explicit
 In the ZIP export the render artifacts appear as
 `assets/visual-<sceneId><ext>`, `assets/scene-<sceneId>.wav` and
 `assets/final-video.mp4`.
+
+### Scene transitions (Phase 4.11)
+
+Every scene has a `transition` that describes how the scene enters. The
+renderer supports three canonical values:
+
+| Value | Effect |
+| --- | --- |
+| `cut` | Hard cut (default) |
+| `fade` | Fade through black |
+| `flash` | Flash through white |
+
+Generated or legacy values are normalized on read: `dissolve`, `crossfade`,
+`dip`, `fade-in`, `fade-out`, `fade-to-black` and similar values become `fade`;
+`white-flash`, `flash-white` and similar values become `flash`; anything else
+becomes `cut`. The script editor exposes the three canonical values only.
+
+The transition belongs to the **incoming** scene. A scene with `fade` fades in
+at its own clip start, while the previous clip fades out; a `flash` does the same
+through white. Both effects meet at the same boundary. The fade length is
+`min(0.45, max(0.15, duration / 3))` seconds.
+
+Effects are baked into each scene clip with ffmpeg `fade` filters, not applied as
+an overlapping `xfade` during assembly. The concat programme therefore keeps the
+exact measured narration duration, and SRT/ASS cues and chapter timestamps do not
+move. True overlapping crossfades are deliberately not supported.
+
+The render job snapshots `transition` and `outgoingTransition` on each scene
+checkpoint. Changing either one invalidates the affected clips, and a completed
+render with different transitions returns `409` instead of reusing old video.
 
 ## Captions and publishing (Phase 4.5)
 

@@ -96,6 +96,13 @@
 - [x] Render panel controls for text size, colours, position, outline and opaque background, with an explicit `Save style` action.
 - [x] Verified by the creator end-to-end suite: partial merge, invalid colour rejection, default ASS line and custom ASS line/style persistence.
 
+#### Phase 4.11 — Per-scene transitions (Completed)
+- [x] Canonical `cut`, `fade` (through black) and `flash` (through white) transitions; generated/legacy values such as `dissolve` map to a fade.
+- [x] Transitions are baked into each scene clip, so the concat programme and every narration/caption timestamp keep their measured duration.
+- [x] Script editor transition selector, with an honest note that narration timing does not move.
+- [x] Transition snapshots on scene checkpoints; a changed transition invalidates the affected clips and the completed-render `409`.
+- [x] Verified with a real ffmpeg render: fade-in/out pixels approach black, flash pixels approach white, scene colours survive, and changing a transition re-encodes the affected scenes.
+
 ### Phase 5: End-to-End Test Suite Verification (Completed)
 - [x] `scripts/test/creator_e2e.mjs` starts the real Studio with temporary storage, an empty temporary `.env` and no provider keys.
 - [x] Covers creator health, project CRUD, zod validation, consent, a real RIFF/WAVE asset upload/download, manual script persistence and honest no-key generation failure.

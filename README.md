@@ -23,7 +23,8 @@ pretending to be a model result.
   cancellation, per-item WAV playback/download, and a 3–30s reference clip with mandatory presenter consent.
 - **Creator Studio** — scripted projects with per-scene narration, uploaded visuals, a checkpointed FFmpeg
   renderer, SRT/ASS captions, music beds and a publishing pack. Caption size, colours, outline, position and
-  background are saved on the project and shared by ASS downloads and burned-in renders.
+  background are saved on the project and shared by ASS downloads and burned-in renders; scene transitions
+  support duration-preserving cuts, fades through black and flashes through white.
 - **Provider layer** — API-first; CLI commands are optional and documented separately.
   | Provider | What it does |
   |---|---|

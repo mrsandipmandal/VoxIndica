@@ -7,12 +7,13 @@
  * persistence, captions/publishing honesty, ZIP export, and a contract
  * stand-in worker for the per-scene voice job. The fake worker returns a real
  * PCM WAV for every scene, so the final captions and chapters use measured
- * durations, not estimates.
+ * durations, not estimates. A local ffmpeg render then verifies that fade and
+ * flash transitions preserve those durations while changing the frames.
  *
  *     node scripts/test/creator_e2e.mjs
  */
 import assert from 'node:assert/strict';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import fs from 'node:fs/promises';
 import http from 'node:http';
 import net from 'node:net';
@@ -73,6 +74,79 @@ function readBody(request) {
     request.on('end', () => resolve(Buffer.concat(chunks)));
     request.on('error', reject);
   });
+}
+
+function requireBinary(binary) {
+  try {
+    execFileSync(binary, ['-version'], { stdio: 'ignore' });
+  } catch {
+    throw new Error(`${binary} is required for the creator render test and was not found.`);
+  }
+}
+
+async function createVisual(filePath, color) {
+  execFileSync(
+    'ffmpeg',
+    [
+      '-y',
+      '-hide_banner',
+      '-loglevel',
+      'error',
+      '-f',
+      'lavfi',
+      '-i',
+      `color=c=${color}:s=64x64`,
+      '-frames:v',
+      '1',
+      filePath
+    ],
+    { stdio: ['ignore', 'ignore', 'pipe'] }
+  );
+  return fs.readFile(filePath);
+}
+
+/** Decode one frame to a single RGB pixel so transition brightness is measurable. */
+function framePixel(filePath, seconds) {
+  const buffer = execFileSync(
+    'ffmpeg',
+    [
+      '-v',
+      'error',
+      '-ss',
+      String(seconds),
+      '-i',
+      filePath,
+      '-frames:v',
+      '1',
+      '-vf',
+      'scale=1:1',
+      '-f',
+      'rawvideo',
+      '-pix_fmt',
+      'rgb24',
+      '-'
+    ],
+    { maxBuffer: 1024 }
+  );
+  assert.equal(buffer.length, 3, `expected one RGB pixel at ${seconds}s, got ${buffer.length} bytes`);
+  return [buffer[0], buffer[1], buffer[2]];
+}
+
+function probeDuration(filePath) {
+  const value = execFileSync(
+    'ffprobe',
+    [
+      '-v',
+      'error',
+      '-show_entries',
+      'format=duration',
+      '-of',
+      'default=nw=1:nk=1',
+      filePath
+    ],
+    { encoding: 'utf8' }
+  ).trim();
+  return Number(value);
 }
 
 async function waitFor(predicate, timeoutMs, label) {
@@ -167,6 +241,8 @@ function expectStatus(response, expected, label) {
 }
 
 async function main() {
+  requireBinary('ffmpeg');
+  requireBinary('ffprobe');
   const temp = await fs.mkdtemp(path.join(os.tmpdir(), 'voxindica-creator-test-'));
   const port = await freePort();
   const studioUrl = `http://127.0.0.1:${port}`;
@@ -378,7 +454,7 @@ async function main() {
           videoType: 'b-roll',
           camera: 'wide shot',
           subtitle: 'নদী ও ভোর',
-          transition: 'cut',
+          transition: 'dissolve',
           durationSeconds: 3
         },
         {
@@ -388,7 +464,7 @@ async function main() {
           videoType: 'b-roll',
           camera: 'medium shot',
           subtitle: 'মাটির শিল্প',
-          transition: 'cut',
+          transition: 'flash',
           durationSeconds: 3
         }
       ],
@@ -412,11 +488,38 @@ async function main() {
     assert.equal(patched.json.project.status, 'script_ready');
     assert.equal(patched.json.project.script.meta.provider, 'manual');
     assert.equal(patched.json.project.script.scenes.length, 2);
+    assert.equal(patched.json.project.script.scenes[0].transition, 'fade');
+    assert.equal(patched.json.project.script.scenes[1].transition, 'flash');
 
     const reloaded = await api(`/api/creator/projects/${projectId}`);
     expectStatus(reloaded, 200, 'reload project');
     assert.equal(reloaded.json.project.script.title, scriptContent.title);
     assert.equal(reloaded.json.project.script.meta.model, 'manual edit');
+
+    // --- real scene visuals for the transition render -----------------
+    const redPng = await createVisual(path.join(temp, 'scene-1.png'), 'red');
+    const bluePng = await createVisual(path.join(temp, 'scene-2.png'), 'blue');
+    const visuals = [];
+    for (const [sceneId, fileName, bytes] of [
+      ['scene-1', 'scene-1.png', redPng],
+      ['scene-2', 'scene-2.png', bluePng]
+    ]) {
+      const uploaded = await api(`/api/creator/projects/${projectId}/assets`, {
+        method: 'POST',
+        body: JSON.stringify({
+          kind: 'scene_visual',
+          fileName,
+          mimeType: 'image/png',
+          dataBase64: `data:image/png;base64,${bytes.toString('base64')}`,
+          sceneId
+        })
+      });
+      expectStatus(uploaded, 201, `upload visual for ${sceneId}`);
+      assert.equal(uploaded.json.asset.kind, 'scene_visual');
+      assert.equal(uploaded.json.asset.sceneId, sceneId);
+      visuals.push(uploaded.json.asset);
+    }
+    assert.equal(visuals.length, 2);
 
     // --- captions/publishing stay honest before narration -------------
     const noCaptions = await api(`/api/creator/projects/${projectId}/captions?format=srt`);
@@ -589,6 +692,123 @@ async function main() {
     assert.match(publishing.text, /SRT available: 2 cues covering 4\.00 seconds/);
     assert.doesNotMatch(publishing.text, /no timestamps are estimated/);
 
+    // --- duration-preserving scene transitions in a real render -------
+    const renderOptions = {
+      preset: 'landscape',
+      burnCaptions: false,
+      normalizeAudio: false
+    };
+    const renderStart = await api(`/api/creator/projects/${projectId}/render`, {
+      method: 'POST',
+      body: JSON.stringify(renderOptions)
+    });
+    expectStatus(renderStart, 202, 'start transition render');
+
+    const finishedRender = await waitFor(async () => {
+      const response = await api(`/api/creator/projects/${projectId}/render`);
+      if (response.status !== 200) return null;
+      const status = response.json?.render?.status;
+      if (status === 'complete') return response.json;
+      if (status === 'failed' || status === 'cancelled' || status === 'interrupted') {
+        throw new Error(`render ended ${status}: ${response.text}`);
+      }
+      return null;
+    }, 120000, 'complete transition render');
+
+    assert.equal(finishedRender.running, false);
+    assert.match(finishedRender.render.message, /scene transitions/);
+    assert.equal(finishedRender.render.scenes['scene-1'].transition, 'fade');
+    assert.equal(finishedRender.render.scenes['scene-1'].outgoingTransition, 'flash');
+    assert.equal(finishedRender.render.scenes['scene-2'].transition, 'flash');
+    assert.equal(finishedRender.render.scenes['scene-2'].outgoingTransition, 'cut');
+    assert.deepEqual(finishedRender.render.captionStyle, {
+      fontScale: 1.5,
+      textColor: '#FFCC00',
+      outlineColor: '#112233',
+      outlineWidth: 5,
+      position: 'top',
+      background: true
+    });
+    assert.ok(finishedRender.render.outputAssetId, 'completed render must have an output asset');
+
+    const videoResponse = await fetch(
+      `${studioUrl}/api/creator/projects/${projectId}/assets/${finishedRender.render.outputAssetId}`
+    );
+    assert.equal(videoResponse.status, 200);
+    assert.match(videoResponse.headers.get('content-type') || '', /video\/mp4/);
+    const finalVideo = Buffer.from(await videoResponse.arrayBuffer());
+    assert.equal(finalVideo.subarray(4, 8).toString('ascii'), 'ftyp');
+    const finalPath = path.join(temp, 'transition-render.mp4');
+    await fs.writeFile(finalPath, finalVideo);
+    const finalDuration = probeDuration(finalPath);
+    assert.ok(
+      Math.abs(finalDuration - 4) < 0.15,
+      `transitions must preserve the 4.00s narration duration, got ${finalDuration}s`
+    );
+
+    const fadeIn = framePixel(finalPath, 0.05);
+    const redScene = framePixel(finalPath, 0.8);
+    const flashOut = framePixel(finalPath, 1.9);
+    const flashIn = framePixel(finalPath, 2.05);
+    const blueScene = framePixel(finalPath, 2.8);
+    assert.ok(
+      fadeIn[0] < 110 && fadeIn[1] < 60 && fadeIn[2] < 60,
+      `scene 1 should fade in from black, got rgb(${fadeIn.join(',')})`
+    );
+    assert.ok(
+      redScene[0] > 150 && redScene[1] < 80 && redScene[2] < 80,
+      `scene 1 should be red after the fade, got rgb(${redScene.join(',')})`
+    );
+    assert.ok(
+      flashOut[0] > 130 && flashOut[1] > 130 && flashOut[2] > 130,
+      `scene 1 should flash to white before the boundary, got rgb(${flashOut.join(',')})`
+    );
+    assert.ok(
+      flashIn[0] > 130 && flashIn[1] > 130 && flashIn[2] > 130,
+      `scene 2 should start white after the flash, got rgb(${flashIn.join(',')})`
+    );
+    assert.ok(
+      blueScene[2] > 150 && blueScene[0] < 80 && blueScene[1] < 80,
+      `scene 2 should be blue after the flash, got rgb(${blueScene.join(',')})`
+    );
+
+    const duplicateRender = await api(`/api/creator/projects/${projectId}/render`, {
+      method: 'POST',
+      body: JSON.stringify(renderOptions)
+    });
+    expectStatus(duplicateRender, 409, 'duplicate transition render');
+    assert.match(duplicateRender.json.error, /already has a finished render/);
+
+    // Changing the incoming transition for scene 2 changes both the outgoing
+    // effect on scene 1 and the incoming effect on scene 2, so no clip is reused.
+    const changedScript = {
+      ...scriptContent,
+      scenes: scriptContent.scenes.map((scene, index) =>
+        index === 1 ? { ...scene, transition: 'cut' } : scene
+      )
+    };
+    const changedProject = await api(`/api/creator/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ script: changedScript })
+    });
+    expectStatus(changedProject, 200, 'change scene transition');
+    assert.equal(changedProject.json.project.script.scenes[1].transition, 'cut');
+
+    const rerender = await api(`/api/creator/projects/${projectId}/render`, {
+      method: 'POST',
+      body: JSON.stringify(renderOptions)
+    });
+    expectStatus(rerender, 202, 'transition change invalidates scene clips');
+    assert.equal(rerender.json.job.completedScenes, 0);
+    assert.equal(rerender.json.project.render.scenes['scene-1'].status, 'pending');
+    assert.equal(rerender.json.project.render.scenes['scene-2'].status, 'pending');
+
+    const cancelled = await api(`/api/creator/projects/${projectId}/render/cancel`, {
+      method: 'POST'
+    });
+    expectStatus(cancelled, 200, 'cancel transition re-render');
+    assert.equal(cancelled.json.project.render.status, 'cancelled');
+
     // --- delete -------------------------------------------------------
     const deleted = await api(`/api/creator/projects/${projectId}`, { method: 'DELETE' });
     expectStatus(deleted, 200, 'delete project');
@@ -602,6 +822,7 @@ async function main() {
     console.log('PASS ZIP export');
     console.log('PASS contract-worker voice job and measured captions/chapters');
     console.log('PASS caption style persistence and ASS styling');
+    console.log('PASS fade/flash transition render and cache invalidation');
     console.log('PASS creator end-to-end');
   } catch (error) {
     console.error(logs);
