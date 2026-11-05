@@ -11,7 +11,7 @@ __pycache__/
 .venv-worker/
 cloudflared*
 worker_session.json
-data/
+/data/
 src-tauri/target/
 src-tauri/gen/
 src-tauri/binaries/*
