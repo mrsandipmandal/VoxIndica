@@ -148,12 +148,14 @@ scripts/{local,api,test}/     local runner, API helpers, smoke test
 ```bash
 npm run lint                 # tsc --noEmit (strict)
 npm run build                # vite build
-python3 scripts/test/worker_smoke.py   # 17 checks, no GPU required
+npm test                     # batch + creator end-to-end (real Studio, temp dirs, no GPU)
+npm run test:worker          # Python worker contract smoke, no GPU required
+npm run desktop:sidecar      # build the desktop Node SEA sidecar
 python3 workers/build_notebooks.py     # regenerate notebooks after editing the core
 ```
 
-CI (`.github/workflows/ci.yml`) runs lint, build, the worker smoke test and a generator drift check
-(`git diff --exit-code`) on every push and pull request. Tagging `v*` triggers
+CI (`.github/workflows/ci.yml`) runs lint, build, `npm test`, the worker smoke test and a generator
+drift check (`git diff --exit-code`) on every push and pull request. Tagging `v*` triggers
 `.github/workflows/release.yml`, which publishes the web build, notebooks and worker as release assets.
 See [`docs/ci-cd.md`](docs/ci-cd.md).
 

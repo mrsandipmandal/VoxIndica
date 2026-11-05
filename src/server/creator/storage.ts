@@ -408,8 +408,11 @@ export async function saveAsset(
     // A changed visual invalidates a previous final render's readiness.
     if (project.status === 'ready') project.status = 'assets_ready';
   } else {
+    // A draft has no script yet, so an uploaded reference clip must not claim
+    // the project reached the later "assets ready" stage. Only a project that
+    // already has its script (or narration) advances with the asset.
     project.status =
-      project.status === 'draft' || project.status === 'script_ready'
+      project.status === 'script_ready' || project.status === 'voice_ready'
         ? 'assets_ready'
         : project.status;
   }

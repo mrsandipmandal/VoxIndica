@@ -15,6 +15,12 @@ npm run lint
 # Production build check
 npm run build
 
+# Batch + creator end-to-end tests (real Studio, temp dirs, no GPU)
+npm test
+
+# Python worker contract smoke test
+npm run test:worker
+
 # Desktop sidecar build
 npm run desktop:sidecar
 ```

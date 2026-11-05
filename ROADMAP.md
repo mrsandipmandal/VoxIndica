@@ -87,3 +87,12 @@
 - [x] Audio settings snapshotted on the render job and included in the completed-render `409`.
 - [x] Render panel music select, upload, preview, volume slider and normalize checkbox.
 - [x] Verified mix levels (FFT), volume scaling, ducking depth, normalization gain and validation errors.
+
+### Phase 5: End-to-End Test Suite Verification (Completed)
+- [x] `scripts/test/creator_e2e.mjs` starts the real Studio with temporary storage, an empty temporary `.env` and no provider keys.
+- [x] Covers creator health, project CRUD, zod validation, consent, a real RIFF/WAVE asset upload/download, manual script persistence and honest no-key generation failure.
+- [x] Covers caption/publishing honesty before narration, unsupported formats, ZIP export and deleted-project `404`.
+- [x] Runs a real per-scene voice job against a contract stand-in worker returning PCM WAVs, then verifies SRT/ASS cues, chapters and the publishing duration from measured audio.
+- [x] Draft projects no longer jump to `assets_ready` when a reference clip is uploaded before a script exists.
+- [x] `npm test` runs the batch and creator end-to-end suites; `npm run test:worker` runs the Python worker contract smoke test. CI runs both.
+- [ ] Browser-driven Playwright regression remains a manual check; this suite exercises the HTTP contract only.

@@ -33,8 +33,8 @@ jobs:
       - name: Production build
         run: npm run build
 
-      - name: Batch webhook end-to-end test
-        run: node scripts/test/batch_webhook.mjs
+      - name: End-to-end tests
+        run: npm test
 
       - name: Upload web bundle
         uses: actions/upload-artifact@v5

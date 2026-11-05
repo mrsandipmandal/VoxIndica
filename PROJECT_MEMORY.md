@@ -54,7 +54,7 @@
 - [x] Creator Studio Phase 4.9 — licensed music-bed upload, looping, sidechain ducking, optional −14 LUFS normalization, and audio settings on the render job
 - [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
 - [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
-- [ ] End-to-End Test Suite Verification (Stage 5)
+- [x] End-to-End Test Suite Verification (Stage 5) — real Studio + temporary storage, creator HTTP contract, honest no-key failure, ZIP export, and a contract-worker voice job with measured captions/chapters (`scripts/test/creator_e2e.mjs`)
 
 ## API-First Provider Layer (branch `feat/api-first-providers`)
 
@@ -192,6 +192,9 @@
 - ASS burn-in E2E: 2-scene project → `?format=ass` returns correct cues and fonts, unsupported format returns 400; render with `burnCaptions: true` completes with `with burned-in captions`, ffprobe h264 1280×720, extracted frame shows the caption at bottom center; ZIP includes the `.ass`.
 - ASS UI (Playwright): `Download ASS` link, `Burn in captions` checkbox, render completes with burned-in captions and a `<video>` element. Screenshot reviewed.
 - Script generation with no keys returns HTTP 500 with the honest “No script provider is configured…” message.
+- Stage 5 suite (`node scripts/test/creator_e2e.mjs`): starts the real Studio with temp creator/batch dirs and an empty temp `.env`; verifies provider health is unconfigured, project validation and CRUD, consent, a real 3s RIFF/WAVE upload/download, manual script persistence (`script_ready`), honest 500 on no-key generation without replacing the script, caption/publishing pre-narration honesty, ZIP signature, and deleted-project 404.
+- Stage 5 voice contract: contract stand-in worker receives two `/clone_voice` calls with the exact uploaded reference bytes and a bearer token; stored 2s PCM WAVs produce SRT cues `00:00:00,000 → 00:00:02,000` and `00:00:02,000 → 00:00:04,000`, ASS `PlayRes` 1280×720 with Noto Sans Bengali, and chapters `00:00 — সূচনা` / `00:02 — মাটির শিল্প` with `SRT available: 2 cues covering 4.00 seconds`.
+- Status fix: uploading a reference asset to a scriptless draft leaves it `draft` instead of claiming `assets_ready`; `script_ready`/`voice_ready` projects still advance to `assets_ready`.
 - Not verified here: live script generation (no `.env` keys), live T4 voice synthesis, and the T4 avatar spike.
 
 - Thumbnail generation: `/api/creator/health` reports `image.configured` and the model id. Without `GEMINI_API_KEY`, `POST /projects/:id/thumbnail/generate` returns `503` with the honest key message; the upload path still works. Live Gemini generation is not verified here because no image key is configured.
