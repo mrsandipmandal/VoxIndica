@@ -150,6 +150,31 @@ export interface CreatorVoiceState {
   updatedAt: string;
 }
 
+export const CAPTION_POSITIONS = ['bottom', 'middle', 'top'] as const;
+export type CaptionPosition = (typeof CAPTION_POSITIONS)[number];
+
+export interface CaptionStyle {
+  /** Multiplier applied to the language-aware base font size. */
+  fontScale: number;
+  /** #RRGGBB text colour. */
+  textColor: string;
+  /** #RRGGBB outline colour. */
+  outlineColor: string;
+  outlineWidth: number;
+  position: CaptionPosition;
+  /** Draw an opaque box behind the text instead of an outline only. */
+  background: boolean;
+}
+
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
+  fontScale: 1,
+  textColor: '#FFFFFF',
+  outlineColor: '#000000',
+  outlineWidth: 3,
+  position: 'bottom',
+  background: false
+};
+
 export const RENDER_PRESETS = ['landscape', 'portrait', 'square'] as const;
 export type RenderPreset = (typeof RENDER_PRESETS)[number];
 
@@ -216,6 +241,8 @@ export interface RenderJob {
   fps: number;
   /** When true, the final assembly burns the derived ASS captions into the video. */
   burnCaptions: boolean;
+  /** Caption style snapshot used when burning captions. */
+  captionStyle: CaptionStyle;
   /** Audio mix snapshot used for this render. */
   audio: RenderAudioOptions;
   scenes: Record<string, RenderSceneState>;
@@ -237,6 +264,7 @@ export interface CreatorProject {
   consent: ConsentRecord | null;
   assets: CreatorAsset[];
   voice: CreatorVoiceState;
+  captionStyle: CaptionStyle;
   render: RenderJob | null;
 }
 
@@ -273,6 +301,7 @@ export interface UpdateProjectInput {
   extraInstructions?: string;
   status?: CreatorProjectStatus;
   script?: ScriptContent | null;
+  captionStyle?: Partial<CaptionStyle>;
 }
 
 export interface GenerateScriptInput {

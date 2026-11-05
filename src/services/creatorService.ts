@@ -1,4 +1,5 @@
 import type {
+  CaptionStyle,
   ConsentRecord,
   CreateProjectInput,
   CreatorAsset,
@@ -178,6 +179,7 @@ export const creatorService = {
       musicAssetId?: string | null;
       musicVolume?: number;
       normalizeAudio?: boolean;
+      captionStyle?: CaptionStyle;
     } = {}
   ): Promise<CreatorProject> {
     const data = await request<{ ok: true; project: CreatorProject }>(
@@ -195,7 +197,8 @@ export const creatorService = {
             : {}),
           ...(options.normalizeAudio !== undefined
             ? { normalizeAudio: options.normalizeAudio }
-            : {})
+            : {}),
+          ...(options.captionStyle ? { captionStyle: options.captionStyle } : {})
         })
       }
     );

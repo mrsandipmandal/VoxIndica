@@ -440,6 +440,48 @@ Burned-in captions require complete narration, because every cue is derived from
 a stored WAV. The ZIP export now includes both `<topic>.srt` and `<topic>.ass`
 when that data exists, alongside the final video.
 
+## Caption style editor (Phase 4.10)
+
+The ASS download and burned-in captions share one saved caption style. It is
+stored on the project and can be updated without starting a render:
+
+```bash
+curl -s -X PATCH http://localhost:3000/api/creator/projects/<uuid> \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "captionStyle": {
+      "fontScale": 1.5,
+      "textColor": "#FFCC00",
+      "outlineColor": "#112233",
+      "outlineWidth": 5,
+      "position": "top",
+      "background": true
+    }
+  }'
+```
+
+| Field | Values | Default |
+| --- | --- | --- |
+| `fontScale` | 0.5–2, multiplier on the language-aware base size | `1` |
+| `textColor` | `#RRGGBB` | `#FFFFFF` |
+| `outlineColor` | `#RRGGBB` | `#000000` |
+| `outlineWidth` | 0–8 ASS outline width (box padding when `background` is on) | `3` |
+| `position` | `bottom`, `middle` or `top` | `bottom` |
+| `background` | use the outline colour as a solid box behind the text | `false` |
+
+A PATCH may include only some fields; the server merges them with the saved
+style. Invalid colours, an out-of-range scale or an unknown position return
+`400`. The default style produces the same ASS line as before this editor
+existed.
+
+`POST /api/creator/projects/:id/render` also accepts a partial `captionStyle`.
+When `burnCaptions` is true, the merged style is saved to the project and
+snapshotted on the render job, so `render/captions.ass` cannot drift from the
+style shown in the API. The completed-render `409` compares the style only when
+burning captions is requested; a style change alone does not invalidate a
+render that never used captions. CSS-like values are converted to ASS
+`&H00BBGGRR` for the style line.
+
 ## Generated thumbnails (Phase 4.7)
 
 Generation is opt-in and approval-gated. The server never writes a generated

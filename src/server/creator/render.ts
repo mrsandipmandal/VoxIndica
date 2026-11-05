@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type {
+  CaptionStyle,
   CreatorAsset,
   CreatorProject,
   RenderAudioOptions,
@@ -14,10 +15,12 @@ import { RENDER_PRESET_DIMENSIONS } from '../../types/creator';
 import {
   CreatorError,
   assetFilePath,
+  normalizeCaptionStyle,
   readProject,
   renderWorkingDir,
   saveFinalVideo,
-  saveRenderState
+  saveRenderState,
+  updateProject
 } from './storage';
 import { buildAssCaptions } from './publish';
 
@@ -439,7 +442,8 @@ async function runRender(
     if (burnCaptions) {
       const { ass } = buildAssCaptions(await readProject(projectId), {
         width: current.width,
-        height: current.height
+        height: current.height,
+        style: current.captionStyle
       });
       await fs.writeFile(path.join(working, 'captions.ass'), ass, 'utf8');
     }
@@ -605,6 +609,7 @@ export async function startRender(
     musicAssetId?: string | null;
     musicVolume?: number;
     normalizeAudio?: boolean;
+    captionStyle?: Partial<CaptionStyle>;
   } = {}
 ): Promise<CreatorProject> {
   if (runningRenders.has(projectId)) {
@@ -634,6 +639,10 @@ export async function startRender(
   }
 
   const previous = project.render;
+  const captionStyle = normalizeCaptionStyle({
+    ...project.captionStyle,
+    ...(options.captionStyle || {})
+  });
   const audio: RenderAudioOptions = {
     musicAssetId:
       options.musicAssetId !== undefined
@@ -674,9 +683,21 @@ export async function startRender(
       previous.audio.musicAssetId === audio.musicAssetId &&
       Math.abs(previous.audio.musicVolume - audio.musicVolume) < 0.0005 &&
       previous.audio.normalizeAudio === audio.normalizeAudio;
+    const previousStyle = normalizeCaptionStyle(
+      previous.captionStyle ?? project.captionStyle
+    );
+    const sameStyle =
+      previousStyle.fontScale === captionStyle.fontScale &&
+      previousStyle.textColor.toLowerCase() === captionStyle.textColor.toLowerCase() &&
+      previousStyle.outlineColor.toLowerCase() ===
+        captionStyle.outlineColor.toLowerCase() &&
+      previousStyle.outlineWidth === captionStyle.outlineWidth &&
+      previousStyle.position === captionStyle.position &&
+      previousStyle.background === captionStyle.background;
     if (
       previous.preset === requestedPreset &&
       previous.burnCaptions === requestedBurn &&
+      (!requestedBurn || sameStyle) &&
       sameAudio
     ) {
       throw new CreatorError(
@@ -729,6 +750,7 @@ export async function startRender(
     provider: 'local',
     preset,
     burnCaptions: options.burnCaptions ?? project.render?.burnCaptions ?? false,
+    captionStyle,
     audio,
     status: 'queued',
     progress: Math.round((completed / total) * 100),
@@ -745,6 +767,12 @@ export async function startRender(
     fps: FPS,
     scenes
   };
+
+  // Persist a style chosen with the render so a later ASS download matches the
+  // burned-in captions. Without an explicit style the saved project style is used.
+  if (options.captionStyle) {
+    await updateProject(projectId, { captionStyle });
+  }
 
   const saved = await saveRenderState(projectId, job, 'rendering');
 

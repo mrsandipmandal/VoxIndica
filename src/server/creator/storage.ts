@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import type {
+  CaptionStyle,
   ConsentRecord,
   CreateProjectInput,
   CreatorAsset,
@@ -15,6 +16,7 @@ import type {
   ScriptContent,
   UpdateProjectInput
 } from '../../types/creator';
+import { CAPTION_POSITIONS, DEFAULT_CAPTION_STYLE } from '../../types/creator';
 
 const DATA_ROOT = path.resolve(
   process.env.VOXINDICA_CREATOR_DATA_DIR || path.join(process.cwd(), 'data', 'projects')
@@ -95,6 +97,42 @@ export function defaultVoiceState(): CreatorVoiceState {
   };
 }
 
+function validColor(value: unknown): value is string {
+  return typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value);
+}
+
+/**
+ * Fill in any field a project written before the caption style editor does not
+ * have. Invalid stored values fall back to the known defaults rather than
+ * producing a broken ASS style line.
+ */
+export function normalizeCaptionStyle(
+  raw?: Partial<CaptionStyle> | null
+): CaptionStyle {
+  const fontScale = Number(raw?.fontScale);
+  const outlineWidth = Number(raw?.outlineWidth);
+  const position = CAPTION_POSITIONS.includes(raw?.position as any)
+    ? (raw!.position as CaptionStyle['position'])
+    : DEFAULT_CAPTION_STYLE.position;
+  return {
+    fontScale:
+      Number.isFinite(fontScale) && fontScale > 0
+        ? Math.min(2, Math.max(0.5, fontScale))
+        : DEFAULT_CAPTION_STYLE.fontScale,
+    textColor: validColor(raw?.textColor)
+      ? raw!.textColor
+      : DEFAULT_CAPTION_STYLE.textColor,
+    outlineColor: validColor(raw?.outlineColor)
+      ? raw!.outlineColor
+      : DEFAULT_CAPTION_STYLE.outlineColor,
+    outlineWidth: Number.isFinite(outlineWidth)
+      ? Math.min(8, Math.max(0, Math.round(outlineWidth)))
+      : DEFAULT_CAPTION_STYLE.outlineWidth,
+    position,
+    background: raw?.background === true
+  };
+}
+
 /**
  * Projects written before the voice stage have no `voice` key. Normalize on
  * read so the API never hands the browser a half-shaped document.
@@ -105,11 +143,15 @@ function normalizeProject(raw: CreatorProject): CreatorProject {
     assets: Array.isArray(raw.assets) ? raw.assets : [],
     script: raw.script ?? null,
     consent: raw.consent ?? null,
+    captionStyle: normalizeCaptionStyle(raw.captionStyle),
     render: raw.render
       ? {
           ...raw.render,
           preset: raw.render.preset ?? 'landscape',
           burnCaptions: raw.render.burnCaptions === true,
+          captionStyle: normalizeCaptionStyle(
+            raw.render.captionStyle ?? raw.captionStyle
+          ),
           audio: {
             musicAssetId: raw.render.audio?.musicAssetId ?? null,
             musicVolume:
@@ -204,6 +246,7 @@ export async function createProject(input: CreateProjectInput): Promise<CreatorP
     consent: null,
     assets: [],
     voice: defaultVoiceState(),
+    captionStyle: { ...DEFAULT_CAPTION_STYLE },
     render: null
   };
 
@@ -217,7 +260,12 @@ export async function updateProject(
   patch: UpdateProjectInput
 ): Promise<CreatorProject> {
   const current = await readProject(id);
-  const { script: scriptPatch, status: statusPatch, ...metaPatch } = patch;
+  const {
+    script: scriptPatch,
+    status: statusPatch,
+    captionStyle: captionStylePatch,
+    ...metaPatch
+  } = patch;
   const next: CreatorProject = {
     ...current,
     ...metaPatch,
@@ -225,6 +273,10 @@ export async function updateProject(
     createdAt: current.createdAt,
     updatedAt: new Date().toISOString(),
     status: statusPatch ?? current.status,
+    captionStyle: normalizeCaptionStyle({
+      ...current.captionStyle,
+      ...(captionStylePatch || {})
+    }),
     script: current.script
   };
 

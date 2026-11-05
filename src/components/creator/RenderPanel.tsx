@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
   AlertCircle,
   CheckCircle2,
@@ -8,12 +8,23 @@ import {
   Music2,
   Play,
   RefreshCw,
+  Save,
   Square,
+  Type,
   Upload,
   Video
 } from 'lucide-react';
-import type { CreatorAsset, CreatorProject, RenderPreset } from '../../types/creator';
-import { RENDER_PRESET_DIMENSIONS, RENDER_PRESETS } from '../../types/creator';
+import type {
+  CaptionStyle,
+  CreatorAsset,
+  CreatorProject,
+  RenderPreset
+} from '../../types/creator';
+import {
+  CAPTION_POSITIONS,
+  RENDER_PRESET_DIMENSIONS,
+  RENDER_PRESETS
+} from '../../types/creator';
 import { creatorService } from '../../services/creatorService';
 
 interface RenderPanelProps {
@@ -52,6 +63,23 @@ function isVideoAsset(asset: CreatorAsset): boolean {
   return asset.mimeType === 'video/mp4' || asset.mimeType === 'video/webm';
 }
 
+function sameStyle(a: CaptionStyle, b: CaptionStyle): boolean {
+  return (
+    a.fontScale === b.fontScale &&
+    a.textColor.toLowerCase() === b.textColor.toLowerCase() &&
+    a.outlineColor.toLowerCase() === b.outlineColor.toLowerCase() &&
+    a.outlineWidth === b.outlineWidth &&
+    a.position === b.position &&
+    a.background === b.background
+  );
+}
+
+const POSITION_LABELS: Record<CaptionStyle['position'], string> = {
+  bottom: 'Bottom',
+  middle: 'Middle',
+  top: 'Top'
+};
+
 export function RenderPanel({
   project,
   onProjectChange,
@@ -74,7 +102,23 @@ export function RenderPanel({
   const [normalizeAudio, setNormalizeAudio] = useState(
     project.render?.audio?.normalizeAudio ?? true
   );
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>({
+    ...project.captionStyle
+  });
   const [uploadingMusic, setUploadingMusic] = useState(false);
+  const [savingStyle, setSavingStyle] = useState(false);
+
+  // The panel stays mounted while the creator switches projects, so reset the
+  // controls to the newly selected project instead of carrying stale values.
+  useEffect(() => {
+    setBurnCaptions(project.render?.burnCaptions === true);
+    setPreset(project.render?.preset ?? 'landscape');
+    setMusicAssetId(project.render?.audio?.musicAssetId ?? null);
+    setMusicVolume(project.render?.audio?.musicVolume ?? 0.2);
+    setNormalizeAudio(project.render?.audio?.normalizeAudio ?? true);
+    setCaptionStyle({ ...project.captionStyle });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [project.id]);
 
   const scenes = project.script?.scenes ?? [];
   const render = project.render;
@@ -83,10 +127,13 @@ export function RenderPanel({
   const running = render?.status === 'queued' || render?.status === 'running';
   const complete = render?.status === 'complete';
   const dimensions = RENDER_PRESET_DIMENSIONS[preset];
+  const styleChanged = !sameStyle(captionStyle, project.captionStyle);
   const formatChanged =
     !render ||
     render.preset !== preset ||
     render.burnCaptions !== burnCaptions ||
+    (burnCaptions &&
+      !sameStyle(captionStyle, render.captionStyle ?? project.captionStyle)) ||
     render.audio.musicAssetId !== musicAssetId ||
     Math.abs(render.audio.musicVolume - musicVolume) > 0.0005 ||
     render.audio.normalizeAudio !== normalizeAudio;
@@ -143,7 +190,8 @@ export function RenderPanel({
         preset,
         musicAssetId,
         musicVolume,
-        normalizeAudio
+        normalizeAudio,
+        ...(burnCaptions ? { captionStyle } : {})
       });
       onProjectChange(next);
       onNotice('Render queued on this machine. Scene clips are written one at a time.');
@@ -151,6 +199,21 @@ export function RenderPanel({
       onError(caught?.message || 'Could not start the render.');
     } finally {
       setStarting(false);
+    }
+  };
+
+  const saveStyle = async () => {
+    setSavingStyle(true);
+    try {
+      const next = await creatorService.updateProject(project.id, {
+        captionStyle
+      });
+      onProjectChange(next);
+      onNotice('Caption style saved. ASS downloads use the same values.');
+    } catch (caught: any) {
+      onError(caught?.message || 'Could not save the caption style.');
+    } finally {
+      setSavingStyle(false);
     }
   };
 
@@ -536,6 +599,171 @@ export function RenderPanel({
           </span>
         </span>
       </label>
+
+      <div className="space-y-3 p-3 bg-[#0B0F17] border border-slate-800 rounded-lg">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-[11px] font-semibold text-slate-200 flex items-center gap-1.5">
+            <Type className="w-3.5 h-3.5 text-amber-400" />
+            Caption style
+          </span>
+          <span
+            className={`text-[10px] font-mono uppercase tracking-wider ${
+              styleChanged ? 'text-amber-400' : 'text-slate-500'
+            }`}
+          >
+            {styleChanged ? 'Unsaved' : 'Saved'}
+          </span>
+        </div>
+
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+              Text size
+            </span>
+            <span className="text-[10px] font-mono text-slate-500">
+              {Math.round(captionStyle.fontScale * 100)}%
+            </span>
+          </div>
+          <input
+            type="range"
+            min={50}
+            max={200}
+            step={5}
+            value={Math.round(captionStyle.fontScale * 100)}
+            disabled={running}
+            onChange={(event) =>
+              setCaptionStyle({
+                ...captionStyle,
+                fontScale: Number(event.target.value) / 100
+              })
+            }
+            className="w-full accent-amber-500 disabled:opacity-50"
+          />
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <label className="block">
+            <span className={labelClass}>Text colour</span>
+            <input
+              type="color"
+              value={captionStyle.textColor}
+              disabled={running}
+              onChange={(event) =>
+                setCaptionStyle({ ...captionStyle, textColor: event.target.value })
+              }
+              className="h-8 w-full bg-transparent border border-slate-700 rounded-md cursor-pointer disabled:opacity-50"
+            />
+            <span className="block text-[10px] font-mono text-slate-500 mt-1">
+              {captionStyle.textColor.toUpperCase()}
+            </span>
+          </label>
+          <label className="block">
+            <span className={labelClass}>Outline colour</span>
+            <input
+              type="color"
+              value={captionStyle.outlineColor}
+              disabled={running}
+              onChange={(event) =>
+                setCaptionStyle({ ...captionStyle, outlineColor: event.target.value })
+              }
+              className="h-8 w-full bg-transparent border border-slate-700 rounded-md cursor-pointer disabled:opacity-50"
+            />
+            <span className="block text-[10px] font-mono text-slate-500 mt-1">
+              {captionStyle.outlineColor.toUpperCase()}
+            </span>
+          </label>
+        </div>
+
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className={labelClass} htmlFor="caption-position">
+              Position
+            </label>
+            <select
+              id="caption-position"
+              value={captionStyle.position}
+              disabled={running}
+              onChange={(event) =>
+                setCaptionStyle({
+                  ...captionStyle,
+                  position: event.target.value as CaptionStyle['position']
+                })
+              }
+              className="w-full bg-[#121927] border border-slate-800 rounded-lg px-3 py-2 text-xs text-slate-200 focus:outline-none focus:border-amber-500/60 disabled:opacity-50"
+            >
+              {CAPTION_POSITIONS.map((position) => (
+                <option key={position} value={position}>
+                  {POSITION_LABELS[position]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-500">
+                {captionStyle.background ? 'Box padding' : 'Outline'}
+              </span>
+              <span className="text-[10px] font-mono text-slate-500">
+                {captionStyle.outlineWidth}px
+              </span>
+            </div>
+            <input
+              type="range"
+              min={0}
+              max={8}
+              step={1}
+              value={captionStyle.outlineWidth}
+              disabled={running}
+              onChange={(event) =>
+                setCaptionStyle({
+                  ...captionStyle,
+                  outlineWidth: Number(event.target.value)
+                })
+              }
+              className="w-full accent-amber-500 disabled:opacity-50"
+            />
+          </div>
+        </div>
+
+        <label
+          className={`flex items-start gap-2 text-[11px] leading-relaxed ${running ? 'text-slate-500' : 'text-slate-300'}`}
+        >
+          <input
+            type="checkbox"
+            checked={captionStyle.background}
+            disabled={running}
+            onChange={(event) =>
+              setCaptionStyle({ ...captionStyle, background: event.target.checked })
+            }
+            className="mt-0.5 accent-amber-500"
+          />
+          <span>
+            Opaque caption box
+            <span className="block text-[10px] text-slate-500 mt-0.5">
+              Uses the outline colour as a solid box behind the text.
+            </span>
+          </span>
+        </label>
+
+        <div className="flex items-center gap-2 border-t border-slate-800 pt-2">
+          <button
+            type="button"
+            onClick={() => void saveStyle()}
+            disabled={running || savingStyle || !styleChanged}
+            className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-md border border-slate-700 text-[11px] text-slate-300 hover:text-amber-300 hover:border-amber-500/40 disabled:opacity-50 transition-colors"
+          >
+            {savingStyle ? (
+              <Loader2 className="w-3 h-3 animate-spin" />
+            ) : (
+              <Save className="w-3 h-3" />
+            )}
+            {styleChanged ? 'Save style' : 'Style saved'}
+          </button>
+          <span className="text-[10px] text-slate-500 leading-snug">
+            Applies to ASS downloads and burned-in captions.
+          </span>
+        </div>
+      </div>
 
       <div className="flex items-center gap-2 border-t border-slate-800 pt-3">
         {running ? (

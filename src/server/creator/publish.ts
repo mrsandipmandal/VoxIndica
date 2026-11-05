@@ -5,8 +5,8 @@
  * in the project. Nothing is estimated from word counts, and no chapter timestamp
  * is invented when a scene has not been synthesized yet.
  */
-import type { CreatorProject } from '../../types/creator';
-import { CreatorError, readProject } from './storage';
+import type { CaptionStyle, CreatorProject } from '../../types/creator';
+import { CreatorError, normalizeCaptionStyle, readProject } from './storage';
 
 function formatSrtTimestamp(totalSeconds: number): string {
   const clamped = Math.max(0, totalSeconds);
@@ -132,6 +132,18 @@ function escapeAssText(value: string): string {
   return collapse(value).replace(/\{/g, '(').replace(/\}/g, ')');
 }
 
+/** #RRGGBB to ASS &HAABBGGRR (alpha 00 = fully opaque). */
+function assColor(value: string): string {
+  const hex = value.replace('#', '').toUpperCase();
+  return `&H00${hex.slice(4, 6)}${hex.slice(2, 4)}${hex.slice(0, 2)}`;
+}
+
+const ASS_ALIGNMENT: Record<CaptionStyle['position'], number> = {
+  bottom: 2,
+  middle: 5,
+  top: 8
+};
+
 export interface AssCaptionPackage {
   ass: string;
   cueCount: number;
@@ -142,6 +154,8 @@ export interface AssCaptionPackage {
 export interface AssCaptionOptions {
   width?: number;
   height?: number;
+  /** Optional override; the saved project style is the default. */
+  style?: Partial<CaptionStyle>;
 }
 
 export function buildAssCaptions(
@@ -152,9 +166,20 @@ export function buildAssCaptions(
   const font = assFontFor(project);
   const width = Math.round(options.width || 1280);
   const height = Math.round(options.height || 720);
-  const fontSize = Math.max(28, Math.round(Math.min(width, height) / 16.36));
+  const style = normalizeCaptionStyle({
+    ...project.captionStyle,
+    ...(options.style || {})
+  });
+  const fontSize = Math.max(
+    10,
+    Math.round((Math.min(width, height) / 16.36) * style.fontScale)
+  );
   const marginH = Math.max(24, Math.round(width * 0.055));
-  const marginV = Math.max(24, Math.round(height * 0.067));
+  const marginV =
+    style.position === 'middle' ? 0 : Math.max(24, Math.round(height * 0.067));
+  const alignment = ASS_ALIGNMENT[style.position];
+  const borderStyle = style.background ? 3 : 1;
+  const backColour = style.background ? '&H80000000' : '&H64000000';
   const lines = [
     '[Script Info]',
     'ScriptType: v4.00+',
@@ -165,7 +190,7 @@ export function buildAssCaptions(
     '',
     '[V4+ Styles]',
     'Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding',
-    `Style: VoxIndica,${font},${fontSize},&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,${marginH},${marginH},${marginV},1`,
+    `Style: VoxIndica,${font},${fontSize},${assColor(style.textColor)},&H000000FF,${assColor(style.outlineColor)},${backColour},0,0,0,0,100,100,0,0,${borderStyle},${style.outlineWidth},1,${alignment},${marginH},${marginH},${marginV},1`,
     '',
     '[Events]',
     'Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text'

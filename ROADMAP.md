@@ -88,6 +88,14 @@
 - [x] Render panel music select, upload, preview, volume slider and normalize checkbox.
 - [x] Verified mix levels (FFT), volume scaling, ducking depth, normalization gain and validation errors.
 
+#### Phase 4.10 — Caption style editor (Completed)
+- [x] Saved `captionStyle` on the project: `fontScale`, `textColor`, `outlineColor`, `outlineWidth`, `position` and `background`.
+- [x] PATCH merges partial style updates; invalid colours/ranges return `400`, and the default style keeps the previous ASS output byte-identical.
+- [x] ASS downloads and burned-in captions use the same saved style, with `#RRGGBB` converted to ASS `&H00BBGGRR` and position mapped to alignment 2/5/8.
+- [x] Render jobs snapshot the style; the completed-render `409` compares it only when `burnCaptions` is requested.
+- [x] Render panel controls for text size, colours, position, outline and opaque background, with an explicit `Save style` action.
+- [x] Verified by the creator end-to-end suite: partial merge, invalid colour rejection, default ASS line and custom ASS line/style persistence.
+
 ### Phase 5: End-to-End Test Suite Verification (Completed)
 - [x] `scripts/test/creator_e2e.mjs` starts the real Studio with temporary storage, an empty temporary `.env` and no provider keys.
 - [x] Covers creator health, project CRUD, zod validation, consent, a real RIFF/WAVE asset upload/download, manual script persistence and honest no-key generation failure.

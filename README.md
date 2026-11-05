@@ -21,6 +21,9 @@ pretending to be a model result.
   an explicit public callback tunnel, and the Studio returns `503` instead of pretending callbacks work.
 - **Batch console** — a `Batch` tab drives the same API with a real persisted job list, terminal-state polling,
   cancellation, per-item WAV playback/download, and a 3–30s reference clip with mandatory presenter consent.
+- **Creator Studio** — scripted projects with per-scene narration, uploaded visuals, a checkpointed FFmpeg
+  renderer, SRT/ASS captions, music beds and a publishing pack. Caption size, colours, outline, position and
+  background are saved on the project and shared by ASS downloads and burned-in renders.
 - **Provider layer** — API-first; CLI commands are optional and documented separately.
   | Provider | What it does |
   |---|---|

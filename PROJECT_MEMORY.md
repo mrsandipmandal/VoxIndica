@@ -52,6 +52,7 @@
 - [x] Creator Studio Phase 4.7 — approval-gated Gemini thumbnail generation (live generation needs GEMINI_API_KEY); assets are written only after the creator approves
 - [x] Creator Studio Phase 4.8 — landscape, portrait and square render presets with dimension-aware clip reuse and ASS sizing
 - [x] Creator Studio Phase 4.9 — licensed music-bed upload, looping, sidechain ducking, optional −14 LUFS normalization, and audio settings on the render job
+- [x] Creator Studio Phase 4.10 — saved caption style (size, colours, outline, position, background) shared by ASS downloads and burned-in renders
 - [ ] Creator Studio T4 avatar spike (notebooks generated; run on Kaggle pending)
 - [ ] Creator Studio presenter stage and AI thumbnail generation (blocked on the avatar spike and an image provider)
 - [x] End-to-End Test Suite Verification (Stage 5) — real Studio + temporary storage, creator HTTP contract, honest no-key failure, ZIP export, and a contract-worker voice job with measured captions/chapters (`scripts/test/creator_e2e.mjs`)
@@ -170,7 +171,7 @@
 - `src/components/creator/CreatorStudio.tsx`: project list, new-project wizard, editor, save/export/delete, provider status, consent card, production-stage rail, 2s polling while a voice or render job is queued/running.
 - `src/components/creator/ScriptEditor.tsx`: narration, scene cards, chapters, tags/hashtags, thumbnail prompt, disclosure, sources.
 - `src/components/creator/VoicePanel.tsx`: per-scene narration synthesis UI.
-- `src/components/creator/RenderPanel.tsx`: per-scene visual upload, render progress, cancel and final video player; output-format preset selector; music-bed upload/select/preview, volume slider and normalization checkbox.
+- `src/components/creator/RenderPanel.tsx`: per-scene visual upload, render progress, cancel and final video player; output-format preset selector; music-bed upload/select/preview, volume slider and normalization checkbox; caption style controls with an explicit save action.
 - `src/components/creator/PublishingPanel.tsx`: captions download, thumbnail upload/preview, prompt copy, publishing pack download.
 - `TopNav` and `App` gained a `creator` tab. Script, voice, render, captions and publishing run for real; the presenter stage is explicitly labelled as pending the avatar spike, and the UI never claims a video exists before one is encoded.
 
@@ -194,6 +195,7 @@
 - Script generation with no keys returns HTTP 500 with the honest “No script provider is configured…” message.
 - Stage 5 suite (`node scripts/test/creator_e2e.mjs`): starts the real Studio with temp creator/batch dirs and an empty temp `.env`; verifies provider health is unconfigured, project validation and CRUD, consent, a real 3s RIFF/WAVE upload/download, manual script persistence (`script_ready`), honest 500 on no-key generation without replacing the script, caption/publishing pre-narration honesty, ZIP signature, and deleted-project 404.
 - Stage 5 voice contract: contract stand-in worker receives two `/clone_voice` calls with the exact uploaded reference bytes and a bearer token; stored 2s PCM WAVs produce SRT cues `00:00:00,000 → 00:00:02,000` and `00:00:02,000 → 00:00:04,000`, ASS `PlayRes` 1280×720 with Noto Sans Bengali, and chapters `00:00 — সূচনা` / `00:02 — মাটির শিল্প` with `SRT available: 2 cues covering 4.00 seconds`.
+- Caption style editor E2E: created projects expose the default style; an invalid colour returns `400`; the default ASS style line is unchanged; a partial PATCH merges without resetting other fields; a full PATCH persists `fontScale: 1.5`, `#FFCC00`, `#112233`, outline `5`, `top` and `background: true`; the resulting ASS line uses size 66, `&H0000CCFF`, `&H00332211`, alignment 8 and `BorderStyle 3`.
 - Status fix: uploading a reference asset to a scriptless draft leaves it `draft` instead of claiming `assets_ready`; `script_ready`/`voice_ready` projects still advance to `assets_ready`.
 - Not verified here: live script generation (no `.env` keys), live T4 voice synthesis, and the T4 avatar spike.
 
@@ -209,4 +211,5 @@
 - Phase 4.2: generated notebooks are at `notebooks/kaggle/{sadtalker,musetalk}_spike/`; run them on a real Kaggle T4 (consented photo + 3–30s WAV), fill the result table in `docs/creator/avatar-spike.md`, then integrate only an engine that produced a real clip.
 - Phase 4.4b: presenter/avatar stage behind the consent gate, using the winning T4 engine; the current renderer already accepts presenter clips as `scene_visual` MP4s.
 - Phase 4.5 is complete. Generated thumbnails require `GEMINI_API_KEY`; no live image call was possible in this environment.
-- Phase 4.9 is complete: music beds are user-supplied, and the renderer only loops/ducks/normalizes that file. Next buildable polish items are per-scene transitions beyond hard cuts and a caption style editor; the remaining blocked work is the T4 avatar spike and presenter stage.
+- Phase 4.9 is complete: music beds are user-supplied, and the renderer only loops/ducks/normalizes that file.
+- Phase 4.10 is complete: caption styles are saved on the project and shared by ASS downloads and burned-in renders. The next buildable polish item is per-scene transitions beyond hard cuts; the remaining blocked work is the T4 avatar spike and presenter stage.

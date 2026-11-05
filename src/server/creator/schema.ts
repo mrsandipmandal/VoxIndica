@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import {
+  CAPTION_POSITIONS,
   CREATOR_LANGUAGES,
   CREATOR_STATUSES,
   CREATOR_TONES,
@@ -12,6 +13,16 @@ const languageSchema = z.enum(CREATOR_LANGUAGES);
 const toneSchema = z.enum(CREATOR_TONES);
 const videoModeSchema = z.enum(CREATOR_VIDEO_MODES);
 const statusSchema = z.enum(CREATOR_STATUSES);
+const colorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/, 'Use a #RRGGBB colour.');
+
+export const captionStyleSchema = z.object({
+  fontScale: z.coerce.number().min(0.5).max(2).optional(),
+  textColor: colorSchema.optional(),
+  outlineColor: colorSchema.optional(),
+  outlineWidth: z.coerce.number().int().min(0).max(8).optional(),
+  position: z.enum(CAPTION_POSITIONS).optional(),
+  background: z.boolean().optional()
+});
 
 export const sceneSchema = z.object({
   id: z.string().min(1).max(64),
@@ -62,7 +73,8 @@ export const updateProjectSchema = z.object({
   videoMode: videoModeSchema.optional(),
   extraInstructions: z.string().trim().max(2000).optional(),
   status: statusSchema.optional(),
-  script: scriptContentSchema.nullable().optional()
+  script: scriptContentSchema.nullable().optional(),
+  captionStyle: captionStyleSchema.optional()
 });
 
 export const generateScriptSchema = z.object({
@@ -97,7 +109,8 @@ export const startRenderSchema = z.object({
   preset: z.enum(RENDER_PRESETS).optional().default('landscape'),
   musicAssetId: z.string().uuid().nullable().optional(),
   musicVolume: z.coerce.number().min(0).max(1).optional(),
-  normalizeAudio: z.boolean().optional()
+  normalizeAudio: z.boolean().optional(),
+  captionStyle: captionStyleSchema.optional()
 });
 
 export const generateThumbnailSchema = z.object({

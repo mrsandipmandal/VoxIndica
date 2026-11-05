@@ -286,6 +286,14 @@ async function main() {
     assert.equal(project.script, null);
     assert.equal(project.consent, null);
     assert.deepEqual(project.assets, []);
+    assert.deepEqual(project.captionStyle, {
+      fontScale: 1,
+      textColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 3,
+      position: 'bottom',
+      background: false
+    });
     const projectId = project.id;
 
     const list = await api('/api/creator/projects');
@@ -298,6 +306,13 @@ async function main() {
 
     const missing = await api('/api/creator/projects/00000000-0000-4000-8000-000000000000');
     expectStatus(missing, 404, 'missing project');
+
+    const badStyle = await api(`/api/creator/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ captionStyle: { textColor: 'yellow' } })
+    });
+    expectStatus(badStyle, 400, 'invalid caption colour');
+    assert.match(badStyle.json.error, /RRGGBB/);
 
     // --- consent ------------------------------------------------------
     const badConsent = await api(`/api/creator/projects/${projectId}/consent`, {
@@ -513,6 +528,59 @@ async function main() {
     assert.match(ass.text, /PlayResY: 720/);
     assert.match(ass.text, /Noto Sans Bengali/);
     assert.match(ass.text, /Dialogue: 0,0:00:00\.00,0:00:02\.00/);
+    assert.ok(
+      ass.text.includes(
+        'Style: VoxIndica,Noto Sans Bengali,44,&H00FFFFFF,&H000000FF,&H00000000,&H64000000,0,0,0,0,100,100,0,0,1,3,1,2,70,70,48,1'
+      ),
+      'the default caption style must match the previous ASS output'
+    );
+
+    // Partial PATCH merges with the saved style instead of resetting it.
+    const partialStyle = await api(`/api/creator/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({ captionStyle: { position: 'middle' } })
+    });
+    expectStatus(partialStyle, 200, 'partial caption style patch');
+    assert.deepEqual(partialStyle.json.project.captionStyle, {
+      fontScale: 1,
+      textColor: '#FFFFFF',
+      outlineColor: '#000000',
+      outlineWidth: 3,
+      position: 'middle',
+      background: false
+    });
+
+    const styledProject = await api(`/api/creator/projects/${projectId}`, {
+      method: 'PATCH',
+      body: JSON.stringify({
+        captionStyle: {
+          fontScale: 1.5,
+          textColor: '#FFCC00',
+          outlineColor: '#112233',
+          outlineWidth: 5,
+          position: 'top',
+          background: true
+        }
+      })
+    });
+    expectStatus(styledProject, 200, 'save caption style');
+    assert.deepEqual(styledProject.json.project.captionStyle, {
+      fontScale: 1.5,
+      textColor: '#FFCC00',
+      outlineColor: '#112233',
+      outlineWidth: 5,
+      position: 'top',
+      background: true
+    });
+
+    const styledAss = await api(`/api/creator/projects/${projectId}/captions?format=ass`);
+    expectStatus(styledAss, 200, 'ASS with custom caption style');
+    assert.ok(
+      styledAss.text.includes(
+        'Style: VoxIndica,Noto Sans Bengali,66,&H0000CCFF,&H000000FF,&H00332211,&H80000000,0,0,0,0,100,100,0,0,3,5,1,8,70,70,48,1'
+      ),
+      `custom ASS style line missing:\n${styledAss.text}`
+    );
 
     const publishing = await api(`/api/creator/projects/${projectId}/publishing`);
     expectStatus(publishing, 200, 'publishing after narration');
@@ -533,6 +601,7 @@ async function main() {
     console.log('PASS captions/publishing honesty before narration');
     console.log('PASS ZIP export');
     console.log('PASS contract-worker voice job and measured captions/chapters');
+    console.log('PASS caption style persistence and ASS styling');
     console.log('PASS creator end-to-end');
   } catch (error) {
     console.error(logs);
